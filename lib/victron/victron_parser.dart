@@ -26,19 +26,44 @@ class VictronAdvert {
   });
 }
 
+enum VictronParseError { tooShort, wrongPrefix, keyMismatch, ok }
+
+class VictronParseResult {
+  final VictronAdvert? advert;
+  final VictronParseError error;
+  final String rawHex;
+  final int? expectedKeyByte;
+  final int? actualKeyByte;
+  VictronParseResult(this.advert, this.error, this.rawHex,
+      {this.expectedKeyByte, this.actualKeyByte});
+}
+
 class VictronParser {
   static const int kVictronManufacturerId = 0x02E1;
 
-  /// Dekryptera Victron manufacturer data. Returnerar null om data inte
-  /// är ett giltigt Victron Instant Readout-paket eller om nyckeln är fel.
-  static Future<VictronAdvert?> parse(
+  static String _bytesToHex(Uint8List bytes, [int max = 16]) {
+    final n = bytes.length < max ? bytes.length : max;
+    final sb = StringBuffer();
+    for (var i = 0; i < n; i++) {
+      sb.write(bytes[i].toRadixString(16).padLeft(2, '0'));
+    }
+    return sb.toString();
+  }
+
+  /// Dekryptera Victron manufacturer data med detaljerat felresultat.
+  static Future<VictronParseResult> parseDetailed(
     Uint8List manufacturerData,
     String hexKey,
   ) async {
-    if (manufacturerData.length < 8) return null;
+    final hex = _bytesToHex(manufacturerData);
+    if (manufacturerData.length < 8) {
+      return VictronParseResult(null, VictronParseError.tooShort, hex);
+    }
 
     final prefix = manufacturerData[0];
-    if (prefix != 0x10) return null; // Instant Readout v1
+    if (prefix != 0x10) {
+      return VictronParseResult(null, VictronParseError.wrongPrefix, hex);
+    }
 
     final modelId = manufacturerData[1] | (manufacturerData[2] << 8);
     final recordType = manufacturerData[3];
@@ -47,11 +72,17 @@ class VictronParser {
     final keyFirstByte = manufacturerData[6];
 
     final key = _hexToBytes(hexKey);
-    if (key.isEmpty || key[0] != keyFirstByte) return null;
+    if (key.isEmpty || key[0] != keyFirstByte) {
+      return VictronParseResult(
+        null,
+        VictronParseError.keyMismatch,
+        hex,
+        expectedKeyByte: key.isNotEmpty ? key[0] : null,
+        actualKeyByte: keyFirstByte,
+      );
+    }
 
     final ciphertext = manufacturerData.sublist(7);
-
-    // IV: 16 bytes, första 2 bytes = nonce (LSB först), resten = 0
     final iv = Uint8List(16);
     iv[0] = nonceLow;
     iv[1] = nonceHigh;
@@ -64,11 +95,24 @@ class VictronParser {
       secretKey: secretKey,
     );
 
-    return VictronAdvert(
-      modelId: modelId,
-      recordType: recordType,
-      decryptedPayload: Uint8List.fromList(decrypted),
+    return VictronParseResult(
+      VictronAdvert(
+        modelId: modelId,
+        recordType: recordType,
+        decryptedPayload: Uint8List.fromList(decrypted),
+      ),
+      VictronParseError.ok,
+      hex,
     );
+  }
+
+  /// Bakåtkompatibel kortform.
+  static Future<VictronAdvert?> parse(
+    Uint8List manufacturerData,
+    String hexKey,
+  ) async {
+    final result = await parseDetailed(manufacturerData, hexKey);
+    return result.advert;
   }
 
   static Uint8List _hexToBytes(String hex) {

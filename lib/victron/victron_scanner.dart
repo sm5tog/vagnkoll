@@ -15,6 +15,9 @@ class VictronState {
   int victronAdvertsSeen = 0;
   int decryptFailures = 0;
   final Set<String> seenMacs = {};
+  String? lastRawHex;
+  String? lastKeyMismatch; // "förväntade XX, fick YY"
+  String? lastError;
 }
 
 class VictronScanner {
@@ -61,12 +64,23 @@ class VictronScanner {
       if (mfgData == null) continue;
       _state.victronAdvertsSeen++;
 
-      final advert = await VictronParser.parse(Uint8List.fromList(mfgData), match.encryptionKey);
-      if (advert == null) {
+      final result = await VictronParser.parseDetailed(
+        Uint8List.fromList(mfgData),
+        match.encryptionKey,
+      );
+      _state.lastRawHex = result.rawHex;
+      if (result.error != VictronParseError.ok) {
         _state.decryptFailures++;
+        _state.lastError = result.error.name;
+        if (result.error == VictronParseError.keyMismatch) {
+          final exp = result.expectedKeyByte?.toRadixString(16).padLeft(2, '0');
+          final act = result.actualKeyByte?.toRadixString(16).padLeft(2, '0');
+          _state.lastKeyMismatch = 'väntade $exp, fick $act';
+        }
         _stateController.add(_state);
         continue;
       }
+      final advert = result.advert!;
 
       if (match.kind == 'shunt') {
         final reading = ShuntReading.fromPayload(advert.decryptedPayload);

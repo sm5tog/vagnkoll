@@ -151,16 +151,25 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
             Text('Victron-paket: ${s.victronAdvertsSeen}',
                 style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
-            Text('Dekrypterings-fel: ${s.decryptFailures}',
+            Text('Dekrypterings-fel: ${s.decryptFailures} (${s.lastError ?? "-"})',
                 style: TextStyle(
                   color: s.decryptFailures > 0
                       ? const Color(0xFFEF4444)
                       : const Color(0xFF6B7280),
                   fontSize: 13,
                 )),
+            if (s.lastKeyMismatch != null)
+              Text('Key-check: ${s.lastKeyMismatch}',
+                  style: const TextStyle(color: Color(0xFFEF4444), fontSize: 11)),
+            if (s.lastRawHex != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text('Råa bytes:\n${s.lastRawHex}',
+                    style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11)),
+              ),
             const SizedBox(height: 8),
             Text('Förväntar:\n${kVictronDevices.map((d) => '  ${d.mac} (${d.name})').join('\n')}',
-                style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11),
+                style: const TextStyle(color: Color(0xFF4B5563), fontSize: 10),
                 textAlign: TextAlign.left),
           ],
         ],
