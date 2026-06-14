@@ -154,28 +154,30 @@ class ShuntReading {
   });
 
   static ShuntReading? fromPayload(Uint8List p) {
-    if (p.length < 16) return null;
+    if (p.length < 15) return null;
     final bd = ByteData.sublistView(p);
-    // Layout enligt Victron docs för BMV-7xx/SmartShunt:
-    //  0..1  : time-to-go (uint16, min)
-    //  2..3  : battery voltage (int16, 10 mV)
-    //  4..5  : alarm reason (uint16)
-    //  6..7  : aux voltage (int16, 10 mV) — ignorera
-    //  8..10 : consumed Ah (int24, 0.1 Ah)
-    //  11..12: SoC (uint16, 0.1 %)
-    //  13..15: current (int24, 1 mA)
+    // Layout enligt victron-ble (Python) för BMV-7xx/SmartShunt:
+    //   0..1  : time-to-go (uint16, min)
+    //   2..3  : battery voltage (int16, 10 mV)
+    //   4..5  : alarm reason (uint16)
+    //   6..7  : aux input (int16) — beroende på läge (temp/midpoint/starter-V)
+    //   8..11 : 32-bit packat fält (LE):
+    //             bits 0..21  = consumed Ah (0.1 Ah)
+    //             bits 22..31 = SoC (0.1 %)
+    //   12..14: current (int24, 1 mA)
     final ttg = bd.getUint16(0, Endian.little);
     final voltRaw = bd.getInt16(2, Endian.little);
     final alarm = bd.getUint16(4, Endian.little);
-    final ahRaw = _readInt24(p, 8);
-    final socRaw = bd.getUint16(11, Endian.little);
-    final currentRaw = _readInt24(p, 13);
+    final packed = bd.getUint32(8, Endian.little);
+    final ahRaw = packed & 0x3FFFFF; // 22 bits
+    final socRaw = (packed >> 22) & 0x3FF; // 10 bits
+    final currentRaw = _readInt24(p, 12);
 
     return ShuntReading(
       batteryVoltage: voltRaw == 0x7FFF ? double.nan : voltRaw / 100.0,
       current: currentRaw == 0x7FFFFF ? double.nan : currentRaw / 1000.0,
-      soc: socRaw == 0xFFFF ? double.nan : socRaw / 10.0,
-      consumedAh: ahRaw == 0x7FFFFF ? null : ahRaw / 10.0,
+      soc: socRaw == 0x3FF ? double.nan : socRaw / 10.0,
+      consumedAh: ahRaw == 0x3FFFFF ? null : ahRaw / 10.0,
       timeToGoMinutes: ttg == 0xFFFF ? null : ttg,
       alarmReason: alarm,
     );
