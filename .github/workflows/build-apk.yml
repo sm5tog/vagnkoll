@@ -34,6 +34,21 @@ jobs:
       - name: Generate platform files
         run: flutter create --platforms=android --project-name=vagnkoll .
 
+      - name: Patch Kotlin version (template har 1.8.22 vilket är för gammalt)
+        run: |
+          sed -i 's/org.jetbrains.kotlin.android" version "[0-9.]*"/org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle.kts
+
+      - name: Patch NDK version i app/build.gradle.kts
+        run: |
+          # Sätter ndkVersion = "27.0.12077973" inuti android-blocket
+          sed -i 's|ndkVersion = flutter.ndkVersion|ndkVersion = "27.0.12077973"|' android/app/build.gradle.kts
+          # Om raden inte fanns, injicera den efter "android {"
+          if ! grep -q 'ndkVersion = "27.0.12077973"' android/app/build.gradle.kts; then
+            sed -i '/^android {/a\    ndkVersion = "27.0.12077973"' android/app/build.gradle.kts
+          fi
+          echo "--- android/app/build.gradle.kts ---"
+          cat android/app/build.gradle.kts
+
       - name: Get dependencies
         run: flutter pub get
 
