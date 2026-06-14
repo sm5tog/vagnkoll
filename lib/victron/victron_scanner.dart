@@ -18,6 +18,8 @@ class VictronState {
   String? lastRawHex;
   String? lastKeyMismatch; // "förväntade XX, fick YY"
   String? lastError;
+  String? lastAllMfgKeys; // alla manufacturer-ID:n vi sett
+  int lastRawLength = 0;
 }
 
 class VictronScanner {
@@ -60,9 +62,26 @@ class VictronScanner {
         continue;
       }
 
-      final mfgData = r.advertisementData.manufacturerData[VictronParser.kVictronManufacturerId];
-      if (mfgData == null) continue;
+      // Logga ALLA mfg-ID vi ser från denna enhet
+      final allKeys = r.advertisementData.manufacturerData.keys
+          .map((k) => '0x${k.toRadixString(16).padLeft(4, '0')}')
+          .join(',');
+      _state.lastAllMfgKeys = allKeys;
+
+      // Försök med Victron-ID först, sen alla andra mfg-data
+      var mfgData = r.advertisementData.manufacturerData[VictronParser.kVictronManufacturerId];
+      if (mfgData == null) {
+        // Testa alla mfg-data som börjar med 0x10 (Victron Instant Readout-marker)
+        for (final entry in r.advertisementData.manufacturerData.entries) {
+          if (entry.value.isNotEmpty && entry.value[0] == 0x10) {
+            mfgData = entry.value;
+            break;
+          }
+        }
+        if (mfgData == null) continue;
+      }
       _state.victronAdvertsSeen++;
+      _state.lastRawLength = mfgData.length;
 
       final result = await VictronParser.parseDetailed(
         Uint8List.fromList(mfgData),

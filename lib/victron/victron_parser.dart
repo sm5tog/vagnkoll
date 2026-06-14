@@ -41,11 +41,12 @@ class VictronParseResult {
 class VictronParser {
   static const int kVictronManufacturerId = 0x02E1;
 
-  static String _bytesToHex(Uint8List bytes, [int max = 16]) {
+  static String _bytesToHex(Uint8List bytes, [int max = 32]) {
     final n = bytes.length < max ? bytes.length : max;
     final sb = StringBuffer();
     for (var i = 0; i < n; i++) {
       sb.write(bytes[i].toRadixString(16).padLeft(2, '0'));
+      if (i < n - 1 && (i + 1) % 4 == 0) sb.write(' ');
     }
     return sb.toString();
   }

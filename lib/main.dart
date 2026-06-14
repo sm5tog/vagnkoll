@@ -164,9 +164,12 @@ class _HomeScreenState extends State<HomeScreen> {
             if (s.lastRawHex != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
-                child: Text('Råa bytes:\n${s.lastRawHex}',
+                child: Text('Råa bytes (${s.lastRawLength}b):\n${s.lastRawHex}',
                     style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11)),
               ),
+            if (s.lastAllMfgKeys != null)
+              Text('Mfg-ID:n: ${s.lastAllMfgKeys}',
+                  style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11)),
             const SizedBox(height: 8),
             Text('Förväntar:\n${kVictronDevices.map((d) => '  ${d.mac} (${d.name})').join('\n')}',
                 style: const TextStyle(color: Color(0xFF4B5563), fontSize: 10),
