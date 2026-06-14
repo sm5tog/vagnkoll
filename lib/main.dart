@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'build_info.dart';
 import 'secrets.dart';
 import 'victron/victron_scanner.dart';
 
@@ -105,12 +106,22 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text('VAGNKOLL',
-                  style: TextStyle(
-                    letterSpacing: 4,
-                    fontSize: 14,
-                    color: Color(0xFF6B7280),
-                  )),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('VAGNKOLL',
+                      style: TextStyle(
+                        letterSpacing: 4,
+                        fontSize: 14,
+                        color: Color(0xFF6B7280),
+                      )),
+                  Text('v$kBuildId',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF4B5563),
+                      )),
+                ],
+              ),
               const SizedBox(height: 24),
               Expanded(
                 child: shunt == null && solar == null
@@ -125,6 +136,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _waitingView() {
+    final s = _state;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -133,6 +145,24 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 24),
           Text(_status,
               style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 16)),
+          const SizedBox(height: 32),
+          if (s != null) ...[
+            Text('BLE-enheter sedda: ${s.totalBleDevicesSeen}',
+                style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
+            Text('Victron-paket: ${s.victronAdvertsSeen}',
+                style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
+            Text('Dekrypterings-fel: ${s.decryptFailures}',
+                style: TextStyle(
+                  color: s.decryptFailures > 0
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF6B7280),
+                  fontSize: 13,
+                )),
+            const SizedBox(height: 8),
+            Text('Förväntar:\n${kVictronDevices.map((d) => '  ${d.mac} (${d.name})').join('\n')}',
+                style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11),
+                textAlign: TextAlign.left),
+          ],
         ],
       ),
     );

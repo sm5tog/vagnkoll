@@ -116,15 +116,31 @@ jobs:
           echo "--- $APPBUILD ---"
           cat "$APPBUILD"
 
+      - name: Generera build_info.dart
+        run: |
+          BUILD_ID="${GITHUB_RUN_NUMBER}-$(git rev-parse --short HEAD)"
+          BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M UTC")
+          cat > lib/build_info.dart <<EOF
+          const String kBuildId = '${BUILD_ID}';
+          const String kBuildTime = '${BUILD_TIME}';
+          EOF
+          echo "Build ID: ${BUILD_ID}"
+          echo "BUILD_ID=${BUILD_ID}" >> $GITHUB_ENV
+
       - name: Get dependencies
         run: flutter pub get
 
       - name: Build APK
         run: flutter build apk --release
 
+      - name: Döp om APK med build-ID
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             build/app/outputs/flutter-apk/vagnkoll-${BUILD_ID}.apk
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: vagnkoll-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: vagnkoll-${{ env.BUILD_ID }}
+          path: build/app/outputs/flutter-apk/vagnkoll-*.apk
           retention-days: 30

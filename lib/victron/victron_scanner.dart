@@ -10,6 +10,11 @@ class VictronState {
   SolarReading? solar;
   DateTime? shuntUpdated;
   DateTime? solarUpdated;
+  // Diagnostik
+  int totalBleDevicesSeen = 0;
+  int victronAdvertsSeen = 0;
+  int decryptFailures = 0;
+  final Set<String> seenMacs = {};
 }
 
 class VictronScanner {
@@ -37,6 +42,9 @@ class VictronScanner {
   Future<void> _onScanResults(List<ScanResult> results) async {
     for (final r in results) {
       final mac = r.device.remoteId.str.toUpperCase();
+      _state.seenMacs.add(mac);
+      _state.totalBleDevicesSeen = _state.seenMacs.length;
+
       VictronDevice? match;
       for (final d in kVictronDevices) {
         if (d.mac.toUpperCase() == mac) {
@@ -44,13 +52,21 @@ class VictronScanner {
           break;
         }
       }
-      if (match == null) continue;
+      if (match == null) {
+        _stateController.add(_state);
+        continue;
+      }
 
       final mfgData = r.advertisementData.manufacturerData[VictronParser.kVictronManufacturerId];
       if (mfgData == null) continue;
+      _state.victronAdvertsSeen++;
 
       final advert = await VictronParser.parse(Uint8List.fromList(mfgData), match.encryptionKey);
-      if (advert == null) continue;
+      if (advert == null) {
+        _state.decryptFailures++;
+        _stateController.add(_state);
+        continue;
+      }
 
       if (match.kind == 'shunt') {
         final reading = ShuntReading.fromPayload(advert.decryptedPayload);
