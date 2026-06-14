@@ -19,7 +19,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          flutter-version: '3.24.3'
+          flutter-version: '3.29.0'
 
       # secrets.dart är gitignorerad — använd template med dummy-data så bygget går igenom.
       # Du fyller i riktiga nycklar lokalt och bygger där om du vill ha en "privat" APK.
