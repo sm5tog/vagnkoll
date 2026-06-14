@@ -24,11 +24,48 @@ jobs:
       # secrets.dart är gitignorerad — använd template med dummy-data så bygget går igenom.
       # Du fyller i riktiga nycklar lokalt och bygger där om du vill ha en "privat" APK.
       # Alternativ: lagra nycklar som GitHub Secrets (vi kan lägga till det senare).
-      - name: Create secrets.dart from template
+      - name: Create secrets.dart från GitHub Secrets
+        env:
+          SHUNT_KEY: ${{ secrets.SHUNT_KEY }}
+          SOLAR_KEY: ${{ secrets.SOLAR_KEY }}
         run: |
-          if [ ! -f lib/secrets.dart ]; then
-            cp lib/secrets.example.dart lib/secrets.dart
-          fi
+          cat > lib/secrets.dart <<EOF
+          class VictronDevice {
+            final String name;
+            final String mac;
+            final String encryptionKey;
+            final String kind;
+            const VictronDevice({
+              required this.name,
+              required this.mac,
+              required this.encryptionKey,
+              required this.kind,
+            });
+          }
+
+          const List<VictronDevice> kVictronDevices = [
+            VictronDevice(
+              name: 'SmartShunt',
+              mac: 'F2:9D:4C:1A:BE:92',
+              encryptionKey: '${SHUNT_KEY}',
+              kind: 'shunt',
+            ),
+            VictronDevice(
+              name: 'SmartSolar MPPT 75/15',
+              mac: 'E6:A0:1C:8F:B4:C3',
+              encryptionKey: '${SOLAR_KEY}',
+              kind: 'solar',
+            ),
+          ];
+
+          const double kBatteryCapacityAh = 150.0;
+          const String kBatteryType = 'LiFePO4';
+          const double kSolarPanelMaxW = 160.0;
+          const double kSocWarn = 30.0;
+          const double kSocCritical = 20.0;
+          const double kSocEmergency = 15.0;
+          const double kInverterIdleAmps = 0.5;
+          EOF
 
       # Flutter create fyller på platform-mappar (android/, ios/) som inte är i repot
       - name: Generate platform files
