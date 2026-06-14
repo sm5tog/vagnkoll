@@ -1,0 +1,48 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.24.3'
+
+      # secrets.dart är gitignorerad — använd template med dummy-data så bygget går igenom.
+      # Du fyller i riktiga nycklar lokalt och bygger där om du vill ha en "privat" APK.
+      # Alternativ: lagra nycklar som GitHub Secrets (vi kan lägga till det senare).
+      - name: Create secrets.dart from template
+        run: |
+          if [ ! -f lib/secrets.dart ]; then
+            cp lib/secrets.example.dart lib/secrets.dart
+          fi
+
+      # Flutter create fyller på platform-mappar (android/, ios/) som inte är i repot
+      - name: Generate platform files
+        run: flutter create --platforms=android --project-name=vagnkoll .
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: vagnkoll-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
