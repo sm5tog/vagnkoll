@@ -34,20 +34,28 @@ jobs:
       - name: Generate platform files
         run: flutter create --platforms=android --project-name=vagnkoll .
 
-      - name: Patch Kotlin version (template har 1.8.22 vilket är för gammalt)
+      - name: Patcha Kotlin- och NDK-version i auto-genererade Gradle-filer
         run: |
-          sed -i 's/org.jetbrains.kotlin.android" version "[0-9.]*"/org.jetbrains.kotlin.android" version "2.1.0"/' android/settings.gradle.kts
+          # Hitta vilket filformat flutter create genererade (Groovy eller Kotlin DSL)
+          SETTINGS=$(ls android/settings.gradle android/settings.gradle.kts 2>/dev/null | head -1)
+          APPBUILD=$(ls android/app/build.gradle android/app/build.gradle.kts 2>/dev/null | head -1)
+          echo "Settings-fil: $SETTINGS"
+          echo "App build-fil: $APPBUILD"
 
-      - name: Patch NDK version i app/build.gradle.kts
-        run: |
-          # Sätter ndkVersion = "27.0.12077973" inuti android-blocket
-          sed -i 's|ndkVersion = flutter.ndkVersion|ndkVersion = "27.0.12077973"|' android/app/build.gradle.kts
-          # Om raden inte fanns, injicera den efter "android {"
-          if ! grep -q 'ndkVersion = "27.0.12077973"' android/app/build.gradle.kts; then
-            sed -i '/^android {/a\    ndkVersion = "27.0.12077973"' android/app/build.gradle.kts
+          # Bumpa Kotlin Gradle plugin till 2.1.0
+          sed -i 's|"org.jetbrains.kotlin.android" version "[0-9.]*"|"org.jetbrains.kotlin.android" version "2.1.0"|' "$SETTINGS"
+
+          # Sätt NDK-version (ersätter flutter.ndkVersion eller injicerar ny rad)
+          if grep -q 'ndkVersion' "$APPBUILD"; then
+            sed -i 's|ndkVersion\s*=\?\s*[a-zA-Z."0-9]*|ndkVersion "27.0.12077973"|' "$APPBUILD"
+          else
+            sed -i '/^android {/a\    ndkVersion "27.0.12077973"' "$APPBUILD"
           fi
-          echo "--- android/app/build.gradle.kts ---"
-          cat android/app/build.gradle.kts
+
+          echo "--- $SETTINGS ---"
+          cat "$SETTINGS"
+          echo "--- $APPBUILD ---"
+          cat "$APPBUILD"
 
       - name: Get dependencies
         run: flutter pub get
