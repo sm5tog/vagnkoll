@@ -45,11 +45,17 @@ jobs:
           # Bumpa Kotlin Gradle plugin till 2.1.0
           sed -i 's|"org.jetbrains.kotlin.android" version "[0-9.]*"|"org.jetbrains.kotlin.android" version "2.1.0"|' "$SETTINGS"
 
-          # Sätt NDK-version (ersätter flutter.ndkVersion eller injicerar ny rad)
-          if grep -q 'ndkVersion' "$APPBUILD"; then
-            sed -i 's|ndkVersion\s*=\?\s*[a-zA-Z."0-9]*|ndkVersion "27.0.12077973"|' "$APPBUILD"
+          # Välj syntax: Kotlin DSL kräver "=", Groovy gör inte
+          if [[ "$APPBUILD" == *.kts ]]; then
+            NDK_LINE='ndkVersion = "27.0.12077973"'
           else
-            sed -i '/^android {/a\    ndkVersion "27.0.12077973"' "$APPBUILD"
+            NDK_LINE='ndkVersion "27.0.12077973"'
+          fi
+          if grep -q 'ndkVersion' "$APPBUILD"; then
+            # Ersätt hela raden som innehåller ndkVersion
+            sed -i "s|.*ndkVersion.*|    $NDK_LINE|" "$APPBUILD"
+          else
+            sed -i "/^android {/a\    $NDK_LINE" "$APPBUILD"
           fi
 
           echo "--- $SETTINGS ---"
