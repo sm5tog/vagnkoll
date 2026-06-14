@@ -46,8 +46,10 @@ jobs:
           cat "$SETTINGS"
           echo "---"
 
-          # Bumpa Kotlin Gradle plugin till 2.1.0 — hantera båda citatstilarna
-          sed -i -E 's|("?)org\.jetbrains\.kotlin\.android\1 version ("?)[0-9.]+\2|\1org.jetbrains.kotlin.android\1 version \22.1.0\2|' "$SETTINGS"
+          # Bumpa Kotlin Gradle plugin till 2.1.0
+          # Matchar: id("org.jetbrains.kotlin.android") version "X.Y.Z"  (Kotlin DSL)
+          #     och: id "org.jetbrains.kotlin.android" version "X.Y.Z"   (Groovy)
+          sed -i -E 's|(kotlin\.android[")] version )"[0-9.]+"|\1"2.1.0"|' "$SETTINGS"
           # Hängsel & livrem: misslyckas bygget direkt om versionen inte ändrades
           if ! grep -q '2.1.0' "$SETTINGS"; then
             echo "FEL: Kunde inte patcha Kotlin-versionen i $SETTINGS"
