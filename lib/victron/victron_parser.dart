@@ -57,20 +57,28 @@ class VictronParser {
     String hexKey,
   ) async {
     final hex = _bytesToHex(manufacturerData);
-    if (manufacturerData.length < 8) {
+    if (manufacturerData.length < 9) {
       return VictronParseResult(null, VictronParseError.tooShort, hex);
     }
 
+    // Victron Instant Readout-format:
+    //   byte 0:    0x10  (record-type-marker)
+    //   byte 1:    underversion (typiskt 0x02)
+    //   byte 2-3:  Model ID (LE)
+    //   byte 4:    Read-out type
+    //   byte 5-6:  IV (LE)
+    //   byte 7:    Första byte i krypteringsnyckeln (sanity check)
+    //   byte 8+:   AES-CTR-krypterad payload
     final prefix = manufacturerData[0];
     if (prefix != 0x10) {
       return VictronParseResult(null, VictronParseError.wrongPrefix, hex);
     }
 
-    final modelId = manufacturerData[1] | (manufacturerData[2] << 8);
-    final recordType = manufacturerData[3];
-    final nonceLow = manufacturerData[4];
-    final nonceHigh = manufacturerData[5];
-    final keyFirstByte = manufacturerData[6];
+    final modelId = manufacturerData[2] | (manufacturerData[3] << 8);
+    final recordType = manufacturerData[4];
+    final nonceLow = manufacturerData[5];
+    final nonceHigh = manufacturerData[6];
+    final keyFirstByte = manufacturerData[7];
 
     final key = _hexToBytes(hexKey);
     if (key.isEmpty || key[0] != keyFirstByte) {
@@ -83,7 +91,7 @@ class VictronParser {
       );
     }
 
-    final ciphertext = manufacturerData.sublist(7);
+    final ciphertext = manufacturerData.sublist(8);
     final iv = Uint8List(16);
     iv[0] = nonceLow;
     iv[1] = nonceHigh;
