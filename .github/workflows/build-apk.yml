@@ -118,8 +118,10 @@ jobs:
 
       - name: Generera build_info.dart
         run: |
-          BUILD_ID="${GITHUB_RUN_NUMBER}-$(git rev-parse --short HEAD)"
-          BUILD_TIME=$(date -u +"%Y-%m-%d %H:%M UTC")
+          # Tidsstämpel i Europe/Stockholm-tid (HHMM)
+          TS=$(TZ='Europe/Stockholm' date +"%H%M")
+          BUILD_ID="${TS}-${GITHUB_RUN_NUMBER}-$(git rev-parse --short HEAD)"
+          BUILD_TIME=$(TZ='Europe/Stockholm' date +"%Y-%m-%d %H:%M")
           cat > lib/build_info.dart <<EOF
           const String kBuildId = '${BUILD_ID}';
           const String kBuildTime = '${BUILD_TIME}';

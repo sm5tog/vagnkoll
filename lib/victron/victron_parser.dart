@@ -154,45 +154,47 @@ class ShuntReading {
   });
 
   static ShuntReading? fromPayload(Uint8List p) {
-    if (p.length < 16) return null;
+    if (p.length < 15) return null;
     final bd = ByteData.sublistView(p);
     // Layout enligt victron-ble (Python) för BMV-7xx/SmartShunt:
-    //   0..1  : time-to-go (uint16, min)
-    //   2..3  : battery voltage (int16, 10 mV)
-    //   4..5  : alarm reason (uint16)
-    //   6..7  : aux input (int16) — beroende på läge (temp/midpoint/starter-V)
-    //   8..12 : 40-bit packat fält (LE):
-    //             bits 0..1   = aux input type
-    //             bits 2..23  = consumed Ah (0.1 Ah)
-    //             bits 24..33 = SoC (0.1 %)
-    //   13..15: current (int24, 1 mA)
+    //   0..1   : time-to-go (uint16, min)
+    //   2..3   : battery voltage (int16, 10 mV)
+    //   4..5   : alarm reason (uint16)
+    //   6..7   : aux input (int16) — beroende på läge (temp/midpoint/starter-V)
+    //   bits 64..117 (= bytes 8..14, bitpackat LE):
+    //     bits  0..1   = aux input mode (2 bits)
+    //     bits  2..23  = current (22 bits signed, 1 mA)
+    //     bits 24..43  = consumed Ah (20 bits unsigned, NEGERAS, 0.1 Ah)
+    //     bits 44..53  = SoC (10 bits unsigned, 0.1 %)
     final ttg = bd.getUint16(0, Endian.little);
     final voltRaw = bd.getInt16(2, Endian.little);
     final alarm = bd.getUint16(4, Endian.little);
 
-    // Bygg 40-bit värde manuellt eftersom ByteData inte har getUint40
-    final packed = p[8] |
-        (p[9] << 8) |
-        (p[10] << 16) |
-        (p[11] << 24) |
-        (p[12] << 32);
-    final ahRaw = (packed >> 2) & 0x3FFFFF; // 22 bits
-    final socRaw = (packed >> 24) & 0x3FF; // 10 bits
-    final currentRaw = _readInt24(p, 13);
+    // Bygg 56-bit LE-värde från bytes 8..14 (7 bytes räcker för bit 0..53)
+    int packed = 0;
+    for (var i = 0; i < 7; i++) {
+      packed |= p[8 + i] << (i * 8);
+    }
+
+    final currentRaw = (packed >> 2) & 0x3FFFFF; // 22 bits unsigned
+    final ahRaw = (packed >> 24) & 0xFFFFF; // 20 bits unsigned
+    final socRaw = (packed >> 44) & 0x3FF; // 10 bits unsigned
+
+    // Sign-extend current från 22 bits
+    final currentSigned = (currentRaw & 0x200000) != 0
+        ? currentRaw - 0x400000
+        : currentRaw;
 
     return ShuntReading(
       batteryVoltage: voltRaw == 0x7FFF ? double.nan : voltRaw / 100.0,
-      current: currentRaw == 0x7FFFFF ? double.nan : currentRaw / 1000.0,
+      current: currentRaw == 0x3FFFFF ? double.nan : currentSigned / 1000.0,
       soc: socRaw == 0x3FF ? double.nan : socRaw / 10.0,
-      consumedAh: ahRaw == 0x3FFFFF ? null : ahRaw / 10.0,
+      // Victron rapporterar consumed_ah som positivt tal, men det är förbrukat
+      // = ska visas som negativt. -0.1 Ah per enhet.
+      consumedAh: ahRaw == 0xFFFFF ? null : -ahRaw / 10.0,
       timeToGoMinutes: ttg == 0xFFFF ? null : ttg,
       alarmReason: alarm,
     );
-  }
-
-  static int _readInt24(Uint8List p, int offset) {
-    final v = p[offset] | (p[offset + 1] << 8) | (p[offset + 2] << 16);
-    return (v & 0x800000) != 0 ? v - 0x1000000 : v;
   }
 }
 
