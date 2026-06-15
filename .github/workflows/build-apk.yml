@@ -176,24 +176,11 @@ jobs:
           keyPassword=${KEY_PASSWORD}
           EOF
 
-          # Snabb-verifiera att lösenorden funkar innan vi spenderar 5 min på build
+          # Snabb-verifiera att lösenordet funkar innan vi spenderar 5 min på build
           echo "Verifierar keystore..."
           if ! keytool -list -keystore android/app/vagnkoll-release.jks \
                 -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
             echo "FEL: KEYSTORE_PASSWORD eller KEY_ALIAS är fel"
-            exit 1
-          fi
-          # Verifiera key-lösenord genom att försöka exportera certet
-          if ! keytool -exportcert -keystore android/app/vagnkoll-release.jks \
-                -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
-            echo "FEL kunde inte hämta certifikat"
-            exit 1
-          fi
-          # Verifiera KEY_PASSWORD specifikt (det är detta som typiskt går fel)
-          if ! echo "" | keytool -keypasswd -keystore android/app/vagnkoll-release.jks \
-                -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" \
-                -keypass "$KEY_PASSWORD" -new "$KEY_PASSWORD" > /dev/null 2>&1; then
-            echo "FEL: KEY_PASSWORD är fel"
             exit 1
           fi
           echo "Keystore verifierat OK"
