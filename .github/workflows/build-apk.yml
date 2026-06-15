@@ -178,15 +178,17 @@ jobs:
           # Patcha app/build.gradle.kts för att läsa key.properties
           APPBUILD=$(ls android/app/build.gradle android/app/build.gradle.kts 2>/dev/null | head -1)
           python3 <<PY
-          import re
+          import re, sys
           p = "$APPBUILD"
           s = open(p).read()
           is_kts = p.endswith(".kts")
-          if "key.properties" in s:
-              print("Redan patchad")
-          else:
-              if is_kts:
-                  top = '''import java.util.Properties
+
+          if "keystoreProperties" in s:
+              print("Redan patchad — skippar")
+              sys.exit(0)
+
+          if is_kts:
+              top = '''import java.util.Properties
           import java.io.FileInputStream
 
           val keystoreProperties = Properties()
@@ -196,7 +198,7 @@ jobs:
           }
 
           '''
-                  signing = '''
+              signing_block = '''
               signingConfigs {
                   create("release") {
                       if (keystoreProperties.containsKey("storeFile")) {
@@ -208,21 +210,30 @@ jobs:
                   }
               }
           '''
-                  s = top + s
-                  # Lägg in signingConfigs och pekade ut release-build på den
-                  s = re.sub(r'(android \{)', r'\1' + signing, s, count=1)
-                  s = re.sub(r'(buildTypes \{\s*release \{)',
-                             r'\1\n            signingConfig = signingConfigs.getByName("release")',
-                             s, count=1)
-              else:
-                  top = '''def keystoreProperties = new Properties()
+              s = top + s
+              # Lägg signingConfigs-block precis efter "android {"
+              s2 = re.sub(r'(android \{)', r'\1' + signing_block, s, count=1)
+              # Byt ut debug-signering mot release-signering i release-buildtypen
+              s3 = re.sub(
+                  r'signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)',
+                  'signingConfig = signingConfigs.getByName("release")',
+                  s2
+              )
+              if s2 == s3:
+                  print("VARNING: hittade ingen debug-signingConfig att ersätta")
+                  print(s2)
+                  sys.exit(1)
+              open(p, "w").write(s3)
+              print("Patchade Kotlin DSL för release-signering")
+          else:
+              top = '''def keystoreProperties = new Properties()
           def keystorePropertiesFile = rootProject.file('key.properties')
           if (keystorePropertiesFile.exists()) {
               keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
           }
 
           '''
-                  signing = '''
+              signing_block = '''
               signingConfigs {
                   release {
                       if (keystoreProperties['storeFile']) {
@@ -234,19 +245,34 @@ jobs:
                   }
               }
           '''
-                  s = top + s
-                  s = re.sub(r'(android \{)', r'\1' + signing, s, count=1)
-                  s = re.sub(r'(buildTypes \{\s*release \{)',
-                             r'\1\n            signingConfig signingConfigs.release',
-                             s, count=1)
-              open(p, "w").write(s)
-              print("Patchade", p, "för release-signering")
+              s = top + s
+              s2 = re.sub(r'(android \{)', r'\1' + signing_block, s, count=1)
+              s3 = re.sub(
+                  r'signingConfig\s+signingConfigs\.debug',
+                  'signingConfig signingConfigs.release',
+                  s2
+              )
+              if s2 == s3:
+                  print("VARNING: hittade ingen debug-signingConfig att ersätta")
+                  print(s2)
+                  sys.exit(1)
+              open(p, "w").write(s3)
+              print("Patchade Groovy för release-signering")
           PY
           echo "--- Patchad $APPBUILD ---"
           cat "$APPBUILD"
 
       - name: Build APK
         run: flutter build apk --release
+
+      - name: Verifiera APK-signatur
+        run: |
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          # Hitta apksigner
+          BUILD_TOOLS=$(ls -d $ANDROID_SDK_ROOT/build-tools/*/ 2>/dev/null | sort -V | tail -1)
+          APKSIGNER="${BUILD_TOOLS}apksigner"
+          echo "Använder $APKSIGNER"
+          "$APKSIGNER" verify --print-certs "$APK" | head -5 || echo "Verify misslyckades"
 
       - name: Döp om APK med build-ID
         run: |
