@@ -11,15 +11,12 @@ import 'classifier.dart';
 import 'load_calculator.dart';
 import 'trainer.dart';
 
-/// Callback typer — använder dynamic för att slippa importera
-/// historik/energy från denna fil (lös koppling).
 typedef PauseResume = void Function();
 
 class AppliancesScreen extends StatefulWidget {
   final ApplianceStore store;
   final VictronScanner scanner;
   final Classifier? classifier;
-  // Pausa-callbacks så vi kan stoppa allt icke-kritiskt under träning.
   final List<PauseResume> pauseHooks;
   final List<PauseResume> resumeHooks;
   const AppliancesScreen({
@@ -84,7 +81,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.add),
-            onPressed: _startTraining,
+            onPressed: () => _editAppliance(null),
           ),
         ],
       ),
@@ -93,7 +90,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
               child: Padding(
                 padding: EdgeInsets.all(24),
                 child: Text(
-                  'Inga apparater inlärda än.\n\nTryck + uppe till höger för att lära in din första apparat.',
+                  'Inga apparater inlagda än.\n\nTryck + uppe till höger för att lägga till.',
                   style: TextStyle(color: Color(0xFF9CA3AF)),
                   textAlign: TextAlign.center,
                 ),
@@ -131,15 +128,39 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         leading: Icon(icon, color: color),
         title: Text(a.name),
         subtitle: Text(
-          'Stadigt ${a.steadyAvg.toStringAsFixed(2)} A • '
-          'Inrush ${a.inrushPeak.toStringAsFixed(2)} A • '
-          '${a.cycleCount} cykler',
+          '${a.expectedWatts.toStringAsFixed(0)} W ±${a.tolerancePct.toStringAsFixed(0)}% • '
+          'min ${a.minDurationSec}s',
           style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
         ),
         trailing: const Icon(Icons.edit, size: 18, color: Color(0xFF6B7280)),
         onTap: () => _editAppliance(a),
       ),
     );
+  }
+
+  Future<void> _editAppliance(Appliance? existing) async {
+    widget.classifier?.pause();
+    for (final p in widget.pauseHooks) {
+      try { p(); } catch (_) {}
+    }
+    final result = await Navigator.of(context).push<Appliance>(
+      MaterialPageRoute(
+        builder: (_) => _ApplianceFormScreen(
+          existing: existing,
+          scanner: widget.scanner,
+        ),
+      ),
+    );
+    widget.classifier?.resume();
+    for (final r in widget.resumeHooks) {
+      try { r(); } catch (_) {}
+    }
+    if (result == null) return;
+    if (existing == null) {
+      await widget.store.insert(result);
+    } else {
+      await widget.store.update(existing.id!, result);
+    }
   }
 
   Future<void> _export() async {
@@ -189,196 +210,129 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
       ));
     }
   }
-
-  Future<void> _startTraining() async {
-    final result = await showDialog<_TrainSpec>(
-      context: context,
-      builder: (_) => const _TrainDialog(),
-    );
-    if (result == null || !mounted) return;
-    _pauseAll();
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => _TrainingScreen(
-        scanner: widget.scanner,
-        store: widget.store,
-        spec: result,
-      ),
-    ));
-    _resumeAll();
-  }
-
-  void _pauseAll() {
-    widget.classifier?.pause();
-    for (final p in widget.pauseHooks) {
-      try { p(); } catch (_) {}
-    }
-  }
-
-  void _resumeAll() {
-    widget.classifier?.resume();
-    for (final r in widget.resumeHooks) {
-      try { r(); } catch (_) {}
-    }
-  }
-
-  Future<void> _editAppliance(Appliance a) async {
-    final action = await showDialog<_EditAction>(
-      context: context,
-      builder: (_) => _EditDialog(appliance: a),
-    );
-    if (action == null || !mounted) return;
-    if (action.deleted) {
-      await widget.store.delete(a.id!);
-      return;
-    }
-    if (action.retrain) {
-      _pauseAll();
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => _TrainingScreen(
-          scanner: widget.scanner,
-          store: widget.store,
-          spec: _TrainSpec(action.name, action.category),
-          replaceExistingId: a.id,
-        ),
-      ));
-      _resumeAll();
-    } else {
-      // Bara metadata ändrad
-      await widget.store.updateMetadata(a.id!, action.name, action.category);
-    }
-  }
 }
 
-class _EditAction {
-  final String name;
-  final ApplianceCategory category;
-  final bool retrain;
-  final bool deleted;
-  _EditAction({
-    required this.name,
-    required this.category,
-    this.retrain = false,
-    this.deleted = false,
-  });
-}
+class _ApplianceFormScreen extends StatefulWidget {
+  final Appliance? existing;
+  final VictronScanner scanner;
+  const _ApplianceFormScreen({required this.existing, required this.scanner});
 
-class _EditDialog extends StatefulWidget {
-  final Appliance appliance;
-  const _EditDialog({required this.appliance});
   @override
-  State<_EditDialog> createState() => _EditDialogState();
+  State<_ApplianceFormScreen> createState() => _ApplianceFormScreenState();
 }
 
-class _EditDialogState extends State<_EditDialog> {
-  late TextEditingController _controller;
+class _ApplianceFormScreenState extends State<_ApplianceFormScreen> {
+  late TextEditingController _nameCtl;
+  late TextEditingController _wattsCtl;
+  late TextEditingController _tolCtl;
+  late TextEditingController _messageCtl;
+  late TextEditingController _durCtl;
   late ApplianceCategory _cat;
+
+  final _measure = QuickMeasure();
+  StreamSubscription<QuickMeasureState>? _measureSub;
+  StreamSubscription<VictronState>? _liveSub;
+  QuickMeasureState? _measureState;
+  bool _measuring = false;
+  double _liveLoadW = 0;
 
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.appliance.name);
-    _cat = widget.appliance.category;
+    final e = widget.existing;
+    _nameCtl = TextEditingController(text: e?.name ?? '');
+    _wattsCtl = TextEditingController(text: e?.expectedWatts.toStringAsFixed(0) ?? '');
+    _tolCtl = TextEditingController(text: (e?.tolerancePct ?? 10).toStringAsFixed(0));
+    _messageCtl = TextEditingController(text: e?.customMessage ?? '');
+    _durCtl = TextEditingController(text: (e?.minDurationSec ?? 5).toString());
+    _cat = e?.category ?? ApplianceCategory.load;
+    _liveSub = widget.scanner.stream.listen((s) {
+      final v = s.shunt?.batteryVoltage ?? s.solar?.batteryVoltage;
+      final l = LoadCalculator.load(s);
+      if (v != null && v > 0 && l != null && mounted) {
+        setState(() => _liveLoadW = l * v);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _measureSub?.cancel();
+    _liveSub?.cancel();
+    _measure.dispose();
+    _nameCtl.dispose();
+    _wattsCtl.dispose();
+    _tolCtl.dispose();
+    _messageCtl.dispose();
+    _durCtl.dispose();
+    super.dispose();
+  }
+
+  void _startMeasure() {
+    setState(() => _measuring = true);
+    _measureSub?.cancel();
+    _measureSub = _measure.stream.listen((s) {
+      if (!mounted) return;
+      setState(() => _measureState = s);
+      if (s.done) {
+        _measuring = false;
+        _wattsCtl.text = s.averageWatts.toStringAsFixed(0);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Mätt: ${s.averageWatts.toStringAsFixed(0)} W'),
+        ));
+      }
+    });
+    _measure.start(widget.scanner);
+  }
+
+  void _save() {
+    final name = _nameCtl.text.trim();
+    final watts = double.tryParse(_wattsCtl.text.replaceAll(',', '.'));
+    if (name.isEmpty || watts == null || watts <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Fyll i namn och en giltig effekt (W).'),
+      ));
+      return;
+    }
+    final tol = double.tryParse(_tolCtl.text.replaceAll(',', '.')) ?? 10.0;
+    final dur = int.tryParse(_durCtl.text) ?? 5;
+    final msg = _messageCtl.text.trim();
+    final a = Appliance(
+      id: widget.existing?.id,
+      name: name,
+      category: _cat,
+      expectedWatts: watts,
+      tolerancePct: tol,
+      customMessage: msg.isEmpty ? null : msg,
+      minDurationSec: dur,
+      createdAt: widget.existing?.createdAt ?? DateTime.now(),
+    );
+    Navigator.of(context).pop(a);
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Redigera apparat'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _controller,
-            inputFormatters: [LengthLimitingTextInputFormatter(40)],
-            decoration: const InputDecoration(labelText: 'Namn'),
-          ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<ApplianceCategory>(
-            value: _cat,
-            decoration: const InputDecoration(labelText: 'Typ'),
-            items: const [
-              DropdownMenuItem(
-                value: ApplianceCategory.load,
-                child: Text('Vanlig last'),
-              ),
-              DropdownMenuItem(
-                value: ApplianceCategory.friendly,
-                child: Text('Glädje (t.ex. kaffe)'),
-              ),
-              DropdownMenuItem(
-                value: ApplianceCategory.warn,
-                child: Text('Varning'),
-              ),
-            ],
-            onChanged: (v) => setState(() => _cat = v ?? ApplianceCategory.load),
+    final isEdit = widget.existing != null;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(isEdit ? 'Redigera apparat' : 'Ny apparat'),
+        backgroundColor: const Color(0xFF111827),
+        actions: [
+          TextButton(
+            onPressed: _save,
+            child: const Text('SPARA'),
           ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(
-            context,
-            _EditAction(name: '', category: _cat, deleted: true),
-          ),
-          child: const Text('RADERA', style: TextStyle(color: Color(0xFFEF4444))),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Avbryt'),
-        ),
-        OutlinedButton(
-          onPressed: () {
-            final name = _controller.text.trim();
-            if (name.isEmpty) return;
-            Navigator.pop(
-              context,
-              _EditAction(name: name, category: _cat, retrain: true),
-            );
-          },
-          child: const Text('Träna om'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final name = _controller.text.trim();
-            if (name.isEmpty) return;
-            Navigator.pop(context, _EditAction(name: name, category: _cat));
-          },
-          child: const Text('Spara'),
-        ),
-      ],
-    );
-  }
-}
-
-class _TrainSpec {
-  final String name;
-  final ApplianceCategory category;
-  _TrainSpec(this.name, this.category);
-}
-
-class _TrainDialog extends StatefulWidget {
-  const _TrainDialog();
-  @override
-  State<_TrainDialog> createState() => _TrainDialogState();
-}
-
-class _TrainDialogState extends State<_TrainDialog> {
-  final _controller = TextEditingController();
-  ApplianceCategory _cat = ApplianceCategory.load;
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Lär in apparat'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
+      body: ListView(
+        padding: const EdgeInsets.all(20),
         children: [
           TextField(
-            controller: _controller,
-            autofocus: true,
+            controller: _nameCtl,
             inputFormatters: [LengthLimitingTextInputFormatter(40)],
             decoration: const InputDecoration(
-              labelText: 'Namn (t.ex. Vattenpump)',
+              labelText: 'Namn',
+              hintText: 'T.ex. Kaffe, Vattenpump, Golvvärme',
             ),
           ),
           const SizedBox(height: 16),
@@ -392,7 +346,7 @@ class _TrainDialogState extends State<_TrainDialog> {
               ),
               DropdownMenuItem(
                 value: ApplianceCategory.friendly,
-                child: Text('Glädje (t.ex. kaffe)'),
+                child: Text('Glädje (kaffe, etc)'),
               ),
               DropdownMenuItem(
                 value: ApplianceCategory.warn,
@@ -401,238 +355,80 @@ class _TrainDialogState extends State<_TrainDialog> {
             ],
             onChanged: (v) => setState(() => _cat = v ?? ApplianceCategory.load),
           ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Avbryt'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final name = _controller.text.trim();
-            if (name.isEmpty) return;
-            Navigator.pop(context, _TrainSpec(name, _cat));
-          },
-          child: const Text('Nästa'),
-        ),
-      ],
-    );
-  }
-}
-
-class _TrainingScreen extends StatefulWidget {
-  final VictronScanner scanner;
-  final ApplianceStore store;
-  final _TrainSpec spec;
-  final int? replaceExistingId;
-  const _TrainingScreen({
-    required this.scanner,
-    required this.store,
-    required this.spec,
-    this.replaceExistingId,
-  });
-
-  @override
-  State<_TrainingScreen> createState() => _TrainingScreenState();
-}
-
-class _TrainingScreenState extends State<_TrainingScreen> {
-  final _trainer = Trainer();
-  StreamSubscription<TrainingSession>? _sub;
-  bool _started = false;
-  bool _finished = false;
-  double _liveLoad = 0;
-  StreamSubscription<VictronState>? _vSub;
-
-  @override
-  void initState() {
-    super.initState();
-    _vSub = widget.scanner.stream.listen((s) {
-      final l = LoadCalculator.load(s);
-      if (l != null && mounted) setState(() => _liveLoad = l);
-    });
-  }
-
-  void _begin() {
-    _trainer.start(
-      scanner: widget.scanner,
-      name: widget.spec.name,
-      category: widget.spec.category,
-    );
-    _sub = _trainer.events.listen((s) {
-      if (!mounted) return;
-      setState(() {});
-      if (s.phase == TrainingPhase.done && !_finished) {
-        _finished = true;
-        _save();
-      }
-    });
-    setState(() => _started = true);
-  }
-
-  Future<void> _save() async {
-    final a = _trainer.finalize();
-    if (a == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('För få mätningar — försök igen.'),
-        ));
-        Navigator.pop(context);
-      }
-      return;
-    }
-    // Om vi tränar om: ta bort den gamla först så namn-konflikten löses
-    if (widget.replaceExistingId != null) {
-      await widget.store.delete(widget.replaceExistingId!);
-    }
-    await widget.store.insert(a);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(
-        '${a.name} sparad (stadigt ${a.steadyAvg.toStringAsFixed(2)} A, '
-        'inrush ${a.inrushPeak.toStringAsFixed(2)} A)',
-      ),
-    ));
-    Navigator.pop(context);
-  }
-
-  @override
-  void dispose() {
-    _sub?.cancel();
-    _vSub?.cancel();
-    _trainer.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final session = _trainer.session;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Lär: ${widget.spec.name}'),
-        backgroundColor: const Color(0xFF111827),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Apparaten ska vara AVSLAGEN nu.',
-              style: TextStyle(color: Color(0xFF9CA3AF)),
-            ),
-            const SizedBox(height: 8),
-            Text('Nuvarande last: ${_liveLoad.toStringAsFixed(2)} A',
-                style: const TextStyle(fontSize: 18)),
-            const SizedBox(height: 24),
-            if (!_started) ...[
-              const Text(
-                'Vi mäter 3 cykler av PÅ och AV. Tryck START och följ instruktionerna. Du slår PÅ och AV apparaten när det står att du ska. Appen detekterar händelserna automatiskt.',
-                style: TextStyle(color: Color(0xFF9CA3AF)),
-              ),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: _begin,
-                child: const Text('START'),
-              ),
-            ] else if (session != null) ...[
-              if (session.totalCycles > 1)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    'Cykel ${session.currentCycle + 1} av ${session.totalCycles}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _wattsCtl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Förväntad effekt',
+                    suffixText: 'W',
                   ),
                 ),
-              if (session.phase == TrainingPhase.baseline) ...[
-                const Text('Mäter basström…\nApparaten ska vara AV.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 16)),
-                const SizedBox(height: 24),
-                const Center(child: CircularProgressIndicator()),
-              ] else if (session.phase == TrainingPhase.waitingOn) ...[
-                const Text('🟡 SLÅ PÅ NU',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFFFBBF24),
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    )),
-                const SizedBox(height: 24),
-                const Center(child: CircularProgressIndicator()),
-              ] else if (session.phase == TrainingPhase.recordingOn) ...[
-                const Text('🔴 SPELAR IN PÅ',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFFEF4444),
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    )),
-                const SizedBox(height: 16),
-                LinearProgressIndicator(
-                  value: session.currentRecording.length /
-                      TrainingSession.onLength,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: _tolCtl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Tolerans',
+                    suffixText: '%',
+                  ),
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  '${session.currentRecording.length} / ${TrainingSession.onLength} sek',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFF9CA3AF)),
-                ),
-              ] else if (session.phase == TrainingPhase.waitingForOff) ...[
-                const Text('🟡 SLÅ AV NU',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFFFBBF24),
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    )),
-                const SizedBox(height: 24),
-                const Center(child: CircularProgressIndicator()),
-              ] else if (session.phase == TrainingPhase.recordingOff) ...[
-                const Text('🔴 SPELAR IN AV',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFFEF4444),
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    )),
-                const SizedBox(height: 16),
-                LinearProgressIndicator(
-                  value: session.currentRecording.length /
-                      TrainingSession.offLength,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '${session.currentRecording.length} / ${TrainingSession.offLength} sek',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFF9CA3AF)),
-                ),
-              ] else if (session.phase == TrainingPhase.timeout) ...[
-                const Text('⌛ Tidsgräns',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFFEF4444), fontSize: 20)),
-                const SizedBox(height: 12),
-                const Text('Apparaten slogs aldrig på/av. Försök igen.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF9CA3AF))),
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Tillbaka'),
-                ),
-              ] else if (session.phase == TrainingPhase.done) ...[
-                const Center(child: CircularProgressIndicator()),
-                const SizedBox(height: 16),
-                const Text('Sparar…',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF9CA3AF))),
-              ],
+              ),
             ],
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Aktuell last: ${_liveLoadW.toStringAsFixed(0)} W',
+            style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          if (!_measuring)
+            OutlinedButton.icon(
+              onPressed: _startMeasure,
+              icon: const Icon(Icons.timer),
+              label: const Text('Mät nu (5 sek)'),
+            )
+          else
+            Column(
+              children: [
+                LinearProgressIndicator(
+                  value: (_measureState?.elapsedSec ?? 0) /
+                      QuickMeasure.measureDuration.inSeconds,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Mäter… ${_measureState?.elapsedSec.toStringAsFixed(1) ?? "0.0"}s '
+                  '(${_measureState?.sampleCount ?? 0} samples)',
+                  style: const TextStyle(color: Color(0xFF9CA3AF)),
+                ),
+              ],
+            ),
+          const SizedBox(height: 24),
+          TextField(
+            controller: _messageCtl,
+            inputFormatters: [LengthLimitingTextInputFormatter(80)],
+            decoration: const InputDecoration(
+              labelText: 'Eget meddelande (valfritt)',
+              hintText: 'T.ex. "Kokar du kaffe? Gott!"',
+              helperText: 'Visas när apparaten detekteras (annars standardmeddelande)',
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _durCtl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Min varaktighet för larm',
+              suffixText: 'sek',
+              helperText: 'Hur länge måste lasten matcha innan apparaten räknas som aktiv',
+            ),
+          ),
+        ],
       ),
     );
   }

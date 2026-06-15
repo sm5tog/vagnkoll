@@ -139,7 +139,7 @@ class AlarmEngine {
         case ApplianceCategory.warn:
           _set(Alarm(
             id: id,
-            message: '⚠️ ${a.name} verkar vara på',
+            message: a.customMessage ?? '⚠️ ${a.name} verkar vara på',
             level: AlarmLevel.warn,
             since: _alarms[id]?.since ?? DateTime.now(),
           ));
@@ -147,14 +147,13 @@ class AlarmEngine {
         case ApplianceCategory.friendly:
           _set(Alarm(
             id: id,
-            message: 'Ska bli gott med ${a.name.toLowerCase()} :-)',
+            message: a.customMessage ?? 'Ska bli gott med ${a.name.toLowerCase()} :-)',
             level: AlarmLevel.info,
             since: _alarms[id]?.since ?? DateTime.now(),
             isFriendly: true,
           ));
           break;
         case ApplianceCategory.load:
-          // vanlig last – inget larm
           break;
       }
     }

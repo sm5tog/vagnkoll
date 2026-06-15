@@ -10,82 +10,67 @@ enum ApplianceCategory {
   warn,     // bör inte vara på (golvvärme, kylskåp på 230V)
 }
 
-/// En "signatur" består av två vågformer som beskriver apparaten:
-///   onTrace  — formen på påslagshändelsen (15 mätpunkter, en per sekund)
-///   offTrace — formen på avstängningshändelsen (8 mätpunkter)
-///
-/// Vågformerna är delta från baseline (subtraherat), så de visar
-/// förändringen apparaten orsakar, inte den absoluta lasten.
+/// Enkel tröskel-baserad apparatprofil.
+/// Apparaten räknas som aktiv när total last matchar [expectedWatts]
+/// ±[tolerancePct]% under minst [minDurationSec] sekunder.
 class Appliance {
   final int? id;
   final String name;
   final ApplianceCategory category;
-  final List<double> onTrace;   // delta från baseline (15 samples)
-  final List<double> offTrace;  // delta från baseline (8 samples, negativa värden)
-  final int cycleCount;          // antal träningscykler som ingår i medel
+  final double expectedWatts;
+  final double tolerancePct;
+  final String? customMessage;
+  final int minDurationSec;
   final DateTime createdAt;
-
-  // Legacy summary stats (för bakåtkompatibilitet / quick checks)
-  double get steadyAvg {
-    if (onTrace.length < 5) return 0;
-    final tail = onTrace.sublist(5);
-    return tail.reduce((a, b) => a + b) / tail.length;
-  }
-
-  double get inrushPeak =>
-      onTrace.isEmpty ? 0 : onTrace.reduce((a, b) => a > b ? a : b);
 
   Appliance({
     this.id,
     required this.name,
     required this.category,
-    required this.onTrace,
-    required this.offTrace,
-    required this.cycleCount,
+    required this.expectedWatts,
+    this.tolerancePct = 10.0,
+    this.customMessage,
+    this.minDurationSec = 5,
     required this.createdAt,
   });
+
+  double get toleranceWatts => expectedWatts * tolerancePct / 100;
+  double get lowerBound => expectedWatts - toleranceWatts;
+  double get upperBound => expectedWatts + toleranceWatts;
 
   Map<String, dynamic> toMap() => {
         'id': id,
         'name': name,
         'category': category.name,
-        'on_trace': jsonEncode(onTrace),
-        'off_trace': jsonEncode(offTrace),
-        'cycle_count': cycleCount,
+        'expected_watts': expectedWatts,
+        'tolerance_pct': tolerancePct,
+        'custom_message': customMessage,
+        'min_duration_sec': minDurationSec,
         'created_at': createdAt.millisecondsSinceEpoch ~/ 1000,
       };
 
-  static Appliance fromMap(Map<String, dynamic> m) {
-    List<double> parseTrace(String? s) {
-      if (s == null || s.isEmpty) return [];
-      try {
-        return (jsonDecode(s) as List).map((e) => (e as num).toDouble()).toList();
-      } catch (_) {
-        return [];
-      }
-    }
-
-    return Appliance(
-      id: m['id'] as int?,
-      name: m['name'] as String,
-      category: ApplianceCategory.values.firstWhere(
-        (c) => c.name == m['category'],
-        orElse: () => ApplianceCategory.load,
-      ),
-      onTrace: parseTrace(m['on_trace'] as String?),
-      offTrace: parseTrace(m['off_trace'] as String?),
-      cycleCount: m['cycle_count'] as int? ?? 1,
-      createdAt: DateTime.fromMillisecondsSinceEpoch(
-          (m['created_at'] as int) * 1000),
-    );
-  }
+  static Appliance fromMap(Map<String, dynamic> m) => Appliance(
+        id: m['id'] as int?,
+        name: m['name'] as String,
+        category: ApplianceCategory.values.firstWhere(
+          (c) => c.name == m['category'],
+          orElse: () => ApplianceCategory.load,
+        ),
+        expectedWatts: (m['expected_watts'] as num).toDouble(),
+        tolerancePct: (m['tolerance_pct'] as num?)?.toDouble() ?? 10.0,
+        customMessage: m['custom_message'] as String?,
+        minDurationSec: m['min_duration_sec'] as int? ?? 5,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+            (m['created_at'] as int) * 1000),
+      );
 
   Map<String, dynamic> toJson() => {
         'name': name,
         'category': category.name,
-        'on_trace': onTrace,
-        'off_trace': offTrace,
-        'cycle_count': cycleCount,
+        'expected_watts': expectedWatts,
+        'tolerance_pct': tolerancePct,
+        'custom_message': customMessage,
+        'min_duration_sec': minDurationSec,
         'created_at': createdAt.toIso8601String(),
       };
 }
@@ -100,44 +85,38 @@ class ApplianceStore {
     final path = p.join(dir.path, 'appliances.db');
     _db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, v) async {
-        await db.execute('''
-          CREATE TABLE appliances (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            category TEXT NOT NULL,
-            on_trace TEXT NOT NULL DEFAULT '[]',
-            off_trace TEXT NOT NULL DEFAULT '[]',
-            cycle_count INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL
-          )
-        ''');
+        await _createTable(db);
       },
       onUpgrade: (db, oldV, newV) async {
-        if (oldV < 3) {
-          // Rensa gamla tabellen — kan inte konvertera summary stats till vågform
+        if (oldV < 4) {
           await db.execute('DROP TABLE IF EXISTS appliances');
-          await db.execute('''
-            CREATE TABLE appliances (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              name TEXT NOT NULL UNIQUE,
-              category TEXT NOT NULL,
-              on_trace TEXT NOT NULL DEFAULT '[]',
-              off_trace TEXT NOT NULL DEFAULT '[]',
-              cycle_count INTEGER NOT NULL DEFAULT 1,
-              created_at INTEGER NOT NULL
-            )
-          ''');
+          await _createTable(db);
         }
       },
     );
   }
 
+  Future<void> _createTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE appliances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        category TEXT NOT NULL,
+        expected_watts REAL NOT NULL,
+        tolerance_pct REAL NOT NULL DEFAULT 10.0,
+        custom_message TEXT,
+        min_duration_sec INTEGER NOT NULL DEFAULT 5,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
   Future<List<Appliance>> all() async {
     final db = _db;
     if (db == null) return [];
-    final rows = await db.query('appliances', orderBy: 'name ASC');
+    final rows = await db.query('appliances', orderBy: 'expected_watts ASC');
     return rows.map(Appliance.fromMap).toList();
   }
 
@@ -153,12 +132,12 @@ class ApplianceStore {
     return id;
   }
 
-  Future<void> updateMetadata(int id, String name, ApplianceCategory category) async {
+  Future<void> update(int id, Appliance a) async {
     final db = _db;
     if (db == null) return;
     await db.update(
       'appliances',
-      {'name': name, 'category': category.name},
+      a.toMap()..remove('id'),
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -181,17 +160,16 @@ class ApplianceStore {
     var n = 0;
     for (final m in list) {
       final mm = m as Map<String, dynamic>;
-      final onT = (mm['on_trace'] as List?)?.map((e) => (e as num).toDouble()).toList() ?? <double>[];
-      final offT = (mm['off_trace'] as List?)?.map((e) => (e as num).toDouble()).toList() ?? <double>[];
       await insert(Appliance(
         name: mm['name'] as String,
         category: ApplianceCategory.values.firstWhere(
           (c) => c.name == mm['category'],
           orElse: () => ApplianceCategory.load,
         ),
-        onTrace: onT,
-        offTrace: offT,
-        cycleCount: mm['cycle_count'] as int? ?? 1,
+        expectedWatts: (mm['expected_watts'] as num).toDouble(),
+        tolerancePct: (mm['tolerance_pct'] as num?)?.toDouble() ?? 10.0,
+        customMessage: mm['custom_message'] as String?,
+        minDurationSec: mm['min_duration_sec'] as int? ?? 5,
         createdAt: DateTime.tryParse(mm['created_at'] as String) ?? DateTime.now(),
       ));
       n++;

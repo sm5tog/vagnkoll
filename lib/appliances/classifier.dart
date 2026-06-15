@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,57 +8,34 @@ import 'appliance_store.dart';
 import 'load_calculator.dart';
 
 class ClassificationResult {
-  final double totalLoadAmps;
+  final double totalLoadWatts;
   final List<Appliance> activeAppliances;
   ClassificationResult({
-    required this.totalLoadAmps,
+    required this.totalLoadWatts,
     required this.activeAppliances,
   });
 }
 
-class _Reading {
-  final DateTime time;
-  final double load;
-  _Reading(this.time, this.load);
-}
-
-/// Event-baserad klassificerare. Bevakar shunt-strömmen, detekterar
-/// plötsliga händelser (apparat slås på / av), spelar in vågformen
-/// och korrelerar mot inlärda signaturer.
+/// Tröskel-baserad klassificerare. Matchar total last (watt) mot apparaternas
+/// förväntade effekter. Använder subset-matchning för att hitta bästa
+/// kombination, stabilitetsfilter per apparat för att undvika brus.
 class Classifier {
-  static const String _prefsKey = 'classifier_active_v1';
-
-  // Trigger-tröskel för händelsedetektering
-  static const double _triggerThreshold = 0.1;
-
-  // Hur lång live-inspelning för matchning
-  static const int _liveOnLength = 10;   // 10 sek
-  static const int _liveOffLength = 6;    // 6 sek
-
-  // Korrelations-tröskel för match
-  static const double _matchThreshold = 0.75;
-
-  // Hur länge bibehållna i live-bufferten innan en händelse kan upptäckas
-  static const Duration _bufferWindow = Duration(seconds: 5);
+  static const String _prefsKey = 'classifier_active_v2';
+  static const Duration _smoothWindow = Duration(seconds: 5);
 
   List<Appliance> _appliances = [];
-  final Set<int> _activeIds = {};
   final _result = StreamController<ClassificationResult>.broadcast();
   Stream<ClassificationResult> get stream => _result.stream;
   ClassificationResult? _last;
   ClassificationResult? get last => _last;
 
   bool _paused = false;
-  final List<_Reading> _history = [];
-  bool _isRecording = false;
-  bool _recordingIsOn = true;
-  final List<double> _liveTrace = [];
-  double _recordBaseline = 0;
-  Timer? _recordTimer;
+  final List<MapEntry<DateTime, double>> _historyW = [];
+  final Map<int, DateTime> _firstMatched = {};
+  final Set<int> _activeIds = {};
 
   SharedPreferences? _prefs;
   StreamSubscription<VictronState>? _sub;
-  VictronScanner? _scanner;
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -74,128 +50,127 @@ class Classifier {
 
   void setLibrary(List<Appliance> appliances) {
     _appliances = appliances;
-    // Ta bort aktiva som inte längre finns
     final validIds = appliances.map((a) => a.id ?? -1).toSet();
     _activeIds.removeWhere((id) => !validIds.contains(id));
     _persist();
     _emit();
   }
 
-  void attachScanner(VictronScanner scanner) {
-    _scanner = scanner;
-    _sub?.cancel();
-    _sub = scanner.stream.listen(_onState);
-  }
-
-  /// Pausar klassificering (t.ex. under träning, för att frigöra CPU).
   void pause() {
     _paused = true;
-    _recordTimer?.cancel();
-    _isRecording = false;
-    _history.clear();
+    _historyW.clear();
+    _firstMatched.clear();
   }
 
-  void resume() {
-    _paused = false;
+  void resume() => _paused = false;
+
+  void attachScanner(VictronScanner scanner) {
+    _sub?.cancel();
+    _sub = scanner.stream.listen(_onState);
   }
 
   void _onState(VictronState s) {
     if (_paused) return;
 
-    final load = LoadCalculator.load(s);
-    if (load == null) return;
+    final voltage = s.shunt?.batteryVoltage ?? s.solar?.batteryVoltage;
+    final loadA = LoadCalculator.load(s);
+    if (voltage == null || voltage <= 0 || loadA == null) return;
+    final loadW = loadA * voltage;
 
     final now = DateTime.now();
-    _history.add(_Reading(now, load));
-    _history.removeWhere((r) => now.difference(r.time) > _bufferWindow);
+    _historyW.add(MapEntry(now, loadW));
+    _historyW.removeWhere((e) => now.difference(e.key) > _smoothWindow);
+    if (_historyW.isEmpty) return;
 
-    if (!_isRecording) {
-      _checkForEvent();
-    }
-  }
+    // Utjämnad last
+    final smoothed =
+        _historyW.map((e) => e.value).reduce((a, b) => a + b) /
+            _historyW.length;
 
-  void _checkForEvent() {
-    if (_history.length < 4) return;
-    // Senaste 2 vs tidigare 2
-    final n = _history.length;
-    final older = _history.sublist(n - 4, n - 2);
-    final newer = _history.sublist(n - 2);
-    final olderAvg = older.map((r) => r.load).reduce((a, b) => a + b) / 2;
-    final newerAvg = newer.map((r) => r.load).reduce((a, b) => a + b) / 2;
-    final delta = newerAvg - olderAvg;
+    // Hitta bästa subset
+    final candidates = _bestSubset(smoothed);
+    final candidateIds = candidates.map((a) => a.id ?? -1).toSet();
 
-    if (delta >= _triggerThreshold) {
-      _beginRecording(isOn: true, baseline: olderAvg);
-    } else if (delta <= -_triggerThreshold) {
-      _beginRecording(isOn: false, baseline: olderAvg);
-    }
-  }
-
-  void _beginRecording({required bool isOn, required double baseline}) {
-    _isRecording = true;
-    _recordingIsOn = isOn;
-    _recordBaseline = baseline;
-    _liveTrace.clear();
-    // Lägg in nuvarande senaste 2 samples som start
-    if (_history.length >= 2) {
-      _liveTrace.add(_history[_history.length - 2].load - baseline);
-      _liveTrace.add(_history[_history.length - 1].load - baseline);
-    }
-
-    final targetLen = isOn ? _liveOnLength : _liveOffLength;
-    _recordTimer?.cancel();
-    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      final scanner = _scanner;
-      if (scanner == null) {
-        _recordTimer?.cancel();
-        _isRecording = false;
-        return;
+    // Stabilitetsfilter per apparat
+    _firstMatched.removeWhere((id, _) => !candidateIds.contains(id));
+    final activeNow = <Appliance>[];
+    bool changed = false;
+    for (final a in candidates) {
+      final id = a.id ?? -1;
+      _firstMatched.putIfAbsent(id, () => now);
+      final elapsed = now.difference(_firstMatched[id]!).inSeconds;
+      if (elapsed >= a.minDurationSec) {
+        activeNow.add(a);
+        if (!_activeIds.contains(id)) {
+          _activeIds.add(id);
+          changed = true;
+        }
       }
-      final load = LoadCalculator.load(scanner.current);
-      if (load == null) return;
-      _liveTrace.add(load - _recordBaseline);
-      if (_liveTrace.length >= targetLen) {
-        _recordTimer?.cancel();
-        _finishRecording();
-      }
-    });
-  }
+    }
+    // Avaktivera de som inte längre matchar
+    final removeIds = _activeIds.where((id) => !candidateIds.contains(id)).toList();
+    for (final id in removeIds) {
+      _activeIds.remove(id);
+      changed = true;
+    }
 
-  void _finishRecording() {
-    _isRecording = false;
-
-    // Hitta bästa matchning
-    Appliance? best;
-    double bestScore = -2;
-    for (final a in _appliances) {
-      final stored = _recordingIsOn ? a.onTrace : a.offTrace;
-      if (stored.length < 3 || _liveTrace.length < 3) continue;
-      // Jämför över så många samples som båda har
-      final len = stored.length < _liveTrace.length
-          ? stored.length
-          : _liveTrace.length;
-      final score = _pearson(
-        stored.sublist(0, len),
-        _liveTrace.sublist(0, len),
+    if (changed) {
+      _persist();
+      _emit();
+    } else {
+      // Uppdatera ändå last-värdet
+      _last = ClassificationResult(
+        totalLoadWatts: smoothed,
+        activeAppliances:
+            _appliances.where((a) => _activeIds.contains(a.id)).toList(),
       );
-      if (score > bestScore) {
-        bestScore = score;
-        best = a;
-      }
     }
+  }
 
-    if (best != null && bestScore >= _matchThreshold && best.id != null) {
-      bool changed = false;
-      if (_recordingIsOn) {
-        changed = _activeIds.add(best.id!);
-      } else {
-        changed = _activeIds.remove(best.id!);
+  /// Provar alla delmängder och returnerar den vars summa ligger inom
+  /// varje apparats individuella tolerans samtidigt som totalen ligger
+  /// närmast den faktiska lasten.
+  List<Appliance> _bestSubset(double loadW) {
+    final n = _appliances.length;
+    if (n == 0) return const [];
+    if (n > 12) return _greedyFallback(loadW);
+    final total = 1 << n;
+    List<Appliance>? best;
+    double bestDist = double.infinity;
+    for (var mask = 0; mask < total; mask++) {
+      double sum = 0;
+      final subset = <Appliance>[];
+      for (var i = 0; i < n; i++) {
+        if ((mask >> i) & 1 == 1) {
+          sum += _appliances[i].expectedWatts;
+          subset.add(_appliances[i]);
+        }
       }
-      if (changed) {
-        _persist();
-        _emit();
+      final dist = (sum - loadW).abs();
+      // Måste vara inom apparaternas kombinerade tolerans
+      final maxTol = subset.fold<double>(0, (s, a) => s + a.toleranceWatts);
+      // Plus en grundtolerans för småfluktuationer
+      final allowed = maxTol + 20;
+      if (dist <= allowed && dist < bestDist) {
+        bestDist = dist;
+        best = subset;
       }
     }
+    return best ?? const [];
+  }
+
+  List<Appliance> _greedyFallback(double loadW) {
+    final sorted = [..._appliances]
+      ..sort((a, b) => b.expectedWatts.compareTo(a.expectedWatts));
+    final active = <Appliance>[];
+    var remaining = loadW;
+    for (final a in sorted) {
+      if (remaining >= a.lowerBound) {
+        active.add(a);
+        remaining -= a.expectedWatts;
+      }
+    }
+    return active;
   }
 
   void _persist() {
@@ -203,37 +178,22 @@ class Classifier {
   }
 
   void _emit() {
-    final last = _history.isNotEmpty ? _history.last.load : 0.0;
-    final active = _appliances.where((a) => _activeIds.contains(a.id)).toList();
+    final smoothed = _historyW.isEmpty
+        ? 0.0
+        : _historyW.map((e) => e.value).reduce((a, b) => a + b) /
+            _historyW.length;
+    final active =
+        _appliances.where((a) => _activeIds.contains(a.id)).toList();
     final result = ClassificationResult(
-      totalLoadAmps: last,
+      totalLoadWatts: smoothed,
       activeAppliances: active,
     );
     _last = result;
     _result.add(result);
   }
 
-  /// Pearson-korrelation: värde mellan -1 och 1, där 1 = perfekt match.
-  static double _pearson(List<double> x, List<double> y) {
-    if (x.length != y.length || x.isEmpty) return 0;
-    final n = x.length;
-    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
-    for (var i = 0; i < n; i++) {
-      sumX += x[i];
-      sumY += y[i];
-      sumXY += x[i] * y[i];
-      sumX2 += x[i] * x[i];
-      sumY2 += y[i] * y[i];
-    }
-    final num_ = n * sumXY - sumX * sumY;
-    final den2 = (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY);
-    if (den2 <= 0) return 0;
-    return num_ / sqrt(den2);
-  }
-
   void dispose() {
     _sub?.cancel();
-    _recordTimer?.cancel();
     _result.close();
   }
 }
