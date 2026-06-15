@@ -5,28 +5,53 @@ import '../victron/victron_scanner.dart';
 import 'appliance_store.dart';
 import 'load_calculator.dart';
 
+enum TrainingPhase {
+  idle,
+  countdown,    // 3-2-1 nedräkning innan apparat slås på
+  measuring,    // mäter under [duration] sekunder
+  done,
+}
+
 class TrainingSession {
   final String name;
   final ApplianceCategory category;
   final Duration duration;
+  final Duration inrushWindow;
   final List<double> samples = [];
   final List<DateTime> sampleTimes = [];
   double? baselineAmps;
-  DateTime? startedAt;
+  DateTime? countdownStartedAt;
+  DateTime? sampleStartedAt;
+  TrainingPhase phase = TrainingPhase.idle;
 
   TrainingSession({
     required this.name,
     required this.category,
     this.duration = const Duration(seconds: 20),
+    this.inrushWindow = const Duration(seconds: 2),
   });
 
-  bool get isComplete =>
-      startedAt != null &&
-      DateTime.now().difference(startedAt!) >= duration;
+  /// 3 sekunder nedräkning innan mätning startar
+  Duration get countdownDuration => const Duration(seconds: 3);
 
-  double get progress {
-    if (startedAt == null) return 0;
-    final elapsed = DateTime.now().difference(startedAt!).inMilliseconds;
+  int get countdownSecondsLeft {
+    if (countdownStartedAt == null) return 3;
+    final elapsed = DateTime.now().difference(countdownStartedAt!);
+    final left = countdownDuration - elapsed;
+    return left.inMilliseconds <= 0 ? 0 : (left.inMilliseconds / 1000).ceil();
+  }
+
+  bool get isCountdownComplete =>
+      countdownStartedAt != null &&
+      DateTime.now().difference(countdownStartedAt!) >= countdownDuration;
+
+  bool get isMeasurementComplete =>
+      sampleStartedAt != null &&
+      DateTime.now().difference(sampleStartedAt!) >= duration;
+
+  double get measurementProgress {
+    if (sampleStartedAt == null) return 0;
+    final elapsed = DateTime.now().difference(sampleStartedAt!).inMilliseconds;
     return (elapsed / duration.inMilliseconds).clamp(0.0, 1.0);
   }
 }
@@ -41,8 +66,8 @@ class Trainer {
 
   TrainingSession? get session => _session;
 
-  /// Kör först några sekunder för att mäta bakgrundsström (innan apparaten
-  /// slås på). Användaren ska INTE ha apparaten på då.
+  /// Startar nedräkning. Användaren ska SLÅ PÅ apparaten vid 0.
+  /// Vi mäter baseline under nedräkningen.
   void start({
     required VictronScanner scanner,
     required String name,
@@ -56,42 +81,54 @@ class Trainer {
       duration: duration,
     );
 
-    // Använd nuvarande last som baseline
     final s = scanner.current;
     _session!.baselineAmps = LoadCalculator.load(s) ?? 0.0;
-    _session!.startedAt = DateTime.now();
+    _session!.countdownStartedAt = DateTime.now();
+    _session!.phase = TrainingPhase.countdown;
 
     _sub = scanner.stream.listen(_onState);
-    _tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (_session == null) return;
-      _events.add(_session!);
-      if (_session!.isComplete) {
+    _tick = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      final session = _session;
+      if (session == null) return;
+      if (session.phase == TrainingPhase.countdown && session.isCountdownComplete) {
+        // Övergå till mätning
+        session.phase = TrainingPhase.measuring;
+        session.sampleStartedAt = DateTime.now();
+      } else if (session.phase == TrainingPhase.measuring &&
+          session.isMeasurementComplete) {
+        session.phase = TrainingPhase.done;
         _tick?.cancel();
       }
+      _events.add(session);
     });
   }
 
   void _onState(VictronState s) {
     final session = _session;
-    if (session == null || session.startedAt == null) return;
-    if (session.isComplete) return;
+    if (session == null) return;
 
     final load = LoadCalculator.load(s);
     if (load == null) return;
 
-    // Subtrahera baseline för att få "extra" ström apparaten drar
-    final delta = (load - (session.baselineAmps ?? 0)).clamp(0.0, double.infinity);
-    session.samples.add(delta);
-    session.sampleTimes.add(DateTime.now());
+    if (session.phase == TrainingPhase.countdown) {
+      // Uppdatera baseline löpande under nedräkningen
+      session.baselineAmps = load;
+    } else if (session.phase == TrainingPhase.measuring) {
+      final delta = (load - (session.baselineAmps ?? 0))
+          .clamp(0.0, double.infinity);
+      session.samples.add(delta);
+      session.sampleTimes.add(DateTime.now());
+    }
   }
 
   /// Beräkna signatur och returnera ny Appliance. Returnerar null om
   /// för få mätningar.
   Appliance? finalize() {
     final session = _session;
-    if (session == null) return null;
+    if (session == null || session.sampleStartedAt == null) return null;
     final samples = session.samples;
-    if (samples.length < 3) return null;
+    final times = session.sampleTimes;
+    if (samples.length < 5) return null;
 
     final avg = samples.reduce((a, b) => a + b) / samples.length;
     final mn = samples.reduce(min);
@@ -102,6 +139,34 @@ class Trainer {
         samples.length;
     final std = sqrt(variance);
 
+    // Dela upp i inrush-fönster och steady-state
+    final inrushEnd = session.sampleStartedAt!.add(session.inrushWindow);
+    final steady = <double>[];
+    double inrushPeak = 0;
+    for (var i = 0; i < samples.length; i++) {
+      if (times[i].isBefore(inrushEnd)) {
+        if (samples[i] > inrushPeak) inrushPeak = samples[i];
+      } else {
+        steady.add(samples[i]);
+      }
+    }
+
+    // Steady-state stats (fallback till hela mätningen om för få samples)
+    double steadyAvg;
+    double steadyStd;
+    if (steady.length >= 3) {
+      steadyAvg = steady.reduce((a, b) => a + b) / steady.length;
+      final svar = steady
+              .map((v) => (v - steadyAvg) * (v - steadyAvg))
+              .reduce((a, b) => a + b) /
+          steady.length;
+      steadyStd = sqrt(svar);
+    } else {
+      steadyAvg = avg;
+      steadyStd = std;
+    }
+    if (inrushPeak == 0) inrushPeak = mx;
+
     return Appliance(
       name: session.name,
       category: session.category,
@@ -109,6 +174,9 @@ class Trainer {
       minAmps: mn,
       maxAmps: mx,
       stdAmps: std,
+      inrushPeak: inrushPeak,
+      steadyAvg: steadyAvg,
+      steadyStd: steadyStd,
       sampleCount: samples.length,
       createdAt: DateTime.now(),
     );

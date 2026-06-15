@@ -45,17 +45,19 @@ class Classifier {
     if (load == null) return;
 
     // Hitta vilka tränade apparater som matchar nuvarande ström.
-    // Enkel girig algoritm: sortera apparaterna efter störst medelström
-    // och försök bortförklara aktuell last steg för steg.
-    final sorted = [..._appliances]..sort((a, b) => b.avgAmps.compareTo(a.avgAmps));
+    // Vi matchar mot STEADY-state-värdet (efter inrush), eftersom den
+    // typiska driften ligger där apparaten är på.
+    // Girig algoritm: sortera efter störst steady-ström och bortförklara
+    // aktuell last steg för steg.
+    final sorted = [..._appliances]..sort((a, b) => b.steadyAvg.compareTo(a.steadyAvg));
     final active = <Appliance>[];
     var remaining = load;
     for (final a in sorted) {
-      // Tolerans baserad på spridning i träningsdata
-      final tol = (a.stdAmps * 2).clamp(0.2, a.avgAmps * 0.4 + 0.5);
-      if (remaining >= a.avgAmps - tol) {
+      // Tolerans baserad på spridning i steady-state, med min/max-clamp
+      final tol = (a.steadyStd * 2).clamp(0.15, a.steadyAvg * 0.4 + 0.4);
+      if (remaining >= a.steadyAvg - tol) {
         active.add(a);
-        remaining -= a.avgAmps;
+        remaining -= a.steadyAvg;
       }
     }
 

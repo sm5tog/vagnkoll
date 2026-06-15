@@ -152,7 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -192,7 +192,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
               Expanded(
                 child: !hasData ? _waitingView() : _liveView(shunt, solar),
               ),
@@ -245,7 +245,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ? '${(kBatteryCapacityAh * shunt!.soc / 100).toStringAsFixed(1)} Ah kvar'
               : null,
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 10),
         Row(
           children: [
             Expanded(
@@ -270,7 +270,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
@@ -293,7 +293,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
@@ -387,30 +387,33 @@ class _BigStat extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
       decoration: BoxDecoration(
         color: const Color(0xFF111827),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 2, fontSize: 12)),
-          const SizedBox(height: 8),
+          Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 2, fontSize: 11)),
+          const SizedBox(height: 2),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(value, style: TextStyle(fontSize: 64, fontWeight: FontWeight.w200, color: color)),
+              Text(value, style: TextStyle(fontSize: 56, fontWeight: FontWeight.w200, color: color, height: 1.0)),
               const SizedBox(width: 6),
-              Text(unit, style: TextStyle(fontSize: 26, color: color.withOpacity(0.7))),
+              Text(unit, style: TextStyle(fontSize: 22, color: color.withOpacity(0.7))),
+              if (subtitle != null) ...[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(subtitle!,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 13, color: color.withOpacity(0.7))),
+                ),
+              ],
             ],
           ),
-          if (subtitle != null) ...[
-            const SizedBox(height: 4),
-            Text(subtitle!,
-                style: TextStyle(fontSize: 14, color: color.withOpacity(0.7))),
-          ],
         ],
       ),
     );
@@ -426,23 +429,23 @@ class _SmallStat extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = color ?? Colors.white;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
       decoration: BoxDecoration(
         color: const Color(0xFF111827),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 1, fontSize: 11)),
-          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 1, fontSize: 10)),
+          const SizedBox(height: 2),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(value, style: TextStyle(fontSize: 32, fontWeight: FontWeight.w300, color: c)),
+              Text(value, style: TextStyle(fontSize: 26, fontWeight: FontWeight.w300, color: c, height: 1.0)),
               const SizedBox(width: 4),
-              Text(unit, style: TextStyle(fontSize: 14, color: c.withOpacity(0.7))),
+              Text(unit, style: TextStyle(fontSize: 12, color: c.withOpacity(0.7))),
             ],
           ),
         ],

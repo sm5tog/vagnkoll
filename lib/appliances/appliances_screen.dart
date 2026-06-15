@@ -115,10 +115,10 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         leading: Icon(icon, color: color),
         title: Text(a.name),
         subtitle: Text(
-          '${a.avgAmps.toStringAsFixed(2)} A '
-          '(${a.minAmps.toStringAsFixed(2)} – ${a.maxAmps.toStringAsFixed(2)}, '
-          'σ=${a.stdAmps.toStringAsFixed(2)})',
-          style: const TextStyle(color: Color(0xFF6B7280)),
+          'Stadigt: ${a.steadyAvg.toStringAsFixed(2)} A '
+          '(σ=${a.steadyStd.toStringAsFixed(2)})  •  '
+          'Inrush: ${a.inrushPeak.toStringAsFixed(2)} A',
+          style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
         ),
       ),
     );
@@ -300,11 +300,11 @@ class _TrainingScreenState extends State<_TrainingScreen> {
     _sub = _trainer.events.listen((_) {
       if (mounted) setState(() {});
     });
-    _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+    _ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (!mounted) return;
       setState(() {});
       final s = _trainer.session;
-      if (s != null && s.isComplete && !_finished) {
+      if (s != null && s.phase == TrainingPhase.done && !_finished) {
         _finished = true;
         _save();
       }
@@ -354,7 +354,7 @@ class _TrainingScreenState extends State<_TrainingScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'Steg 1: Se till att apparaten är AVSLAGEN.',
+              'Apparaten ska vara AVSLAGEN nu.',
               style: TextStyle(color: Color(0xFF9CA3AF)),
             ),
             const SizedBox(height: 8),
@@ -363,27 +363,57 @@ class _TrainingScreenState extends State<_TrainingScreen> {
             const SizedBox(height: 24),
             if (!_started) ...[
               const Text(
-                'Steg 2: Slå PÅ apparaten och tryck Start. Håll den på i 20 sekunder.',
+                'Tryck START. Då räknas det ner 3-2-1, sen ska du slå PÅ apparaten samtidigt som mätningen börjar. Mätningen tar 20 sekunder — håll apparaten på hela tiden.',
                 style: TextStyle(color: Color(0xFF9CA3AF)),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
               FilledButton(
                 onPressed: _begin,
                 child: const Text('START'),
               ),
             ] else if (session != null) ...[
-              LinearProgressIndicator(value: session.progress),
-              const SizedBox(height: 16),
-              Text(
-                'Mäter… ${session.samples.length} samples',
-                style: const TextStyle(color: Color(0xFF9CA3AF)),
-              ),
-              const SizedBox(height: 12),
-              if (session.samples.isNotEmpty)
+              if (session.phase == TrainingPhase.countdown) ...[
+                const Text('Slå PÅ om…',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 18)),
+                const SizedBox(height: 16),
                 Text(
-                  'Senaste: ${session.samples.last.toStringAsFixed(2)} A',
-                  style: const TextStyle(fontSize: 16),
+                  '${session.countdownSecondsLeft}',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 120,
+                    fontWeight: FontWeight.w200,
+                    color: Color(0xFFFBBF24),
+                  ),
                 ),
+              ] else if (session.phase == TrainingPhase.measuring) ...[
+                const Text('SLÅ PÅ NU 🔴',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFFEF4444),
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    )),
+                const SizedBox(height: 16),
+                LinearProgressIndicator(value: session.measurementProgress),
+                const SizedBox(height: 16),
+                Text(
+                  'Mäter… ${session.samples.length} samples',
+                  style: const TextStyle(color: Color(0xFF9CA3AF)),
+                ),
+                const SizedBox(height: 8),
+                if (session.samples.isNotEmpty)
+                  Text(
+                    'Senaste: ${session.samples.last.toStringAsFixed(2)} A',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+              ] else if (session.phase == TrainingPhase.done) ...[
+                const Center(child: CircularProgressIndicator()),
+                const SizedBox(height: 16),
+                const Text('Sparar…',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xFF9CA3AF))),
+              ],
             ],
           ],
         ),
