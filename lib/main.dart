@@ -10,13 +10,16 @@ import 'appliances/appliances_screen.dart';
 import 'appliances/classifier.dart';
 import 'build_info.dart';
 import 'energy_counter.dart';
+import 'foreground_task.dart';
 import 'history/history_screen.dart';
 import 'history/history_store.dart';
 import 'secrets.dart';
 import 'victron/victron_scanner.dart';
 import 'web/web_server.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await VagnkollForegroundService.init();
   runApp(const VagnkollApp());
 }
 
@@ -60,7 +63,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _scanner = VictronScanner();
   final _history = HistoryStore();
   final _energy = EnergyCounter();
@@ -82,9 +85,26 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WakelockPlus.enable();
     _init();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Starta om BLE-scanning för säkerhets skull
+      _restartScanner();
+    }
+  }
+
+  Future<void> _restartScanner() async {
+    try {
+      await _scanner.stop();
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _scanner.start();
+    } catch (_) {}
   }
 
   Future<void> _init() async {
@@ -137,6 +157,10 @@ class _HomeScreenState extends State<HomeScreen> {
       alarms: _alarms,
     );
     await _webServer!.start();
+
+    // Starta foreground service så Android håller appen vid liv
+    // även när skärmen är låst
+    await VagnkollForegroundService.start();
     // Tickar var sekund för att uppdatera telemetri-indikatorn
     _telemetryTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
@@ -145,6 +169,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
     _energySub?.cancel();
     _classSub?.cancel();
@@ -152,6 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _applianceChangesSub?.cancel();
     _telemetryTimer?.cancel();
     _webServer?.stop();
+    VagnkollForegroundService.stop();
     _scanner.dispose();
     _history.close();
     _energy.dispose();
