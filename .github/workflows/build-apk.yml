@@ -20,6 +20,31 @@ jobs:
         with:
           channel: 'stable'
           flutter-version: '3.29.0'
+          cache: true
+
+      - name: Cache Gradle-paket (sparar ~3-5 min per bygge)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml', '.github/workflows/build-apk.yml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Cache Android NDK
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk/27.0.12077973
+          key: android-ndk-27.0.12077973
+
+      - name: Cache pub-paket
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
 
       # secrets.dart är gitignorerad — använd template med dummy-data så bygget går igenom.
       # Du fyller i riktiga nycklar lokalt och bygger där om du vill ha en "privat" APK.
