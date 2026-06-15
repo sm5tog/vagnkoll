@@ -28,23 +28,37 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml', '.github/workflows/build-apk.yml') }}
+          # Bara pubspec.yaml påverkar — workflow-ändringar ska inte busta cachen
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.yaml') }}
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Cache Android NDK
+      - name: Cache Android NDK + SDK platforms/build-tools
         uses: actions/cache@v4
         with:
-          path: /usr/local/lib/android/sdk/ndk/27.0.12077973
-          key: android-ndk-27.0.12077973
+          path: |
+            /usr/local/lib/android/sdk/ndk/27.0.12077973
+            /usr/local/lib/android/sdk/platforms/android-33
+            /usr/local/lib/android/sdk/platforms/android-35
+            /usr/local/lib/android/sdk/build-tools
+            /usr/local/lib/android/sdk/cmake
+          key: android-sdk-v3
 
       - name: Cache pub-paket
         uses: actions/cache@v4
         with:
           path: ~/.pub-cache
-          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.yaml') }}
+          key: pub-${{ runner.os }}-${{ hashFiles('pubspec.yaml') }}
           restore-keys: |
             pub-${{ runner.os }}-
+
+      - name: Cache Flutter .dart_tool
+        uses: actions/cache@v4
+        with:
+          path: .dart_tool
+          key: darttool-${{ runner.os }}-${{ hashFiles('pubspec.yaml') }}
+          restore-keys: |
+            darttool-${{ runner.os }}-
 
       # secrets.dart är gitignorerad — använd template med dummy-data så bygget går igenom.
       # Du fyller i riktiga nycklar lokalt och bygger där om du vill ha en "privat" APK.
