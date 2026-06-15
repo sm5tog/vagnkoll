@@ -245,6 +245,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (solar != null)
           Text('Laddläge: ${solar.chargeStateName}',
               style: const TextStyle(color: Color(0xFF9CA3AF))),
+        if (_state?.lastShuntDecryptedHex != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Shunt-bytes: ${_state!.lastShuntDecryptedHex}',
+              style: const TextStyle(color: Color(0xFF4B5563), fontSize: 10),
+            ),
+          ),
       ],
     );
   }

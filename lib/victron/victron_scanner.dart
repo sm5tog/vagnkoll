@@ -20,6 +20,7 @@ class VictronState {
   String? lastError;
   String? lastAllMfgKeys; // alla manufacturer-ID:n vi sett
   int lastRawLength = 0;
+  String? lastShuntDecryptedHex;
 }
 
 class VictronScanner {
@@ -102,6 +103,19 @@ class VictronScanner {
       final advert = result.advert!;
 
       if (match.kind == 'shunt') {
+        // Diagnostik: spara de dekrypterade bytes så vi kan se rätt layout
+        final sb = StringBuffer();
+        final n = advert.decryptedPayload.length < 20
+            ? advert.decryptedPayload.length
+            : 20;
+        for (var i = 0; i < n; i++) {
+          sb.write(advert.decryptedPayload[i]
+              .toRadixString(16)
+              .padLeft(2, '0'));
+          if ((i + 1) % 4 == 0 && i < n - 1) sb.write(' ');
+        }
+        _state.lastShuntDecryptedHex = sb.toString();
+
         final reading = ShuntReading.fromPayload(advert.decryptedPayload);
         if (reading != null) {
           _state.shunt = reading;
