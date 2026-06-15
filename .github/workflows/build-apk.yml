@@ -290,7 +290,7 @@ jobs:
 
       - name: Verifiera APK-signatur
         run: |
-          APK=build/app/outputs/flutter-apk/app-release.apk
+          APK=build/app/outputs/flutter-apk/*release.apk
           # Hitta apksigner
           BUILD_TOOLS=$(ls -d $ANDROID_SDK_ROOT/build-tools/*/ 2>/dev/null | sort -V | tail -1)
           APKSIGNER="${BUILD_TOOLS}apksigner"
@@ -299,7 +299,7 @@ jobs:
 
       - name: Döp om APK med build-ID
         run: |
-          mv build/app/outputs/flutter-apk/app-release.apk \
+          mv build/app/outputs/flutter-apk/*release.apk \
              build/app/outputs/flutter-apk/vagnkoll-${BUILD_ID}.apk
 
       - name: Upload APK
