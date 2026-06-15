@@ -4,6 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'alarms/alarm_engine.dart';
+import 'appliances/appliance_store.dart';
+import 'appliances/appliances_screen.dart';
+import 'appliances/classifier.dart';
 import 'build_info.dart';
 import 'energy_counter.dart';
 import 'history/history_screen.dart';
@@ -59,9 +63,17 @@ class _HomeScreenState extends State<HomeScreen> {
   final _scanner = VictronScanner();
   final _history = HistoryStore();
   final _energy = EnergyCounter();
+  final _appliances = ApplianceStore();
+  final _classifier = Classifier();
+  final _alarms = AlarmEngine();
   StreamSubscription<VictronState>? _sub;
   StreamSubscription<EnergyCounter>? _energySub;
+  StreamSubscription<ClassificationResult>? _classSub;
+  StreamSubscription<List<Alarm>>? _alarmSub;
+  StreamSubscription? _applianceChangesSub;
   VictronState? _state;
+  ClassificationResult? _classification;
+  List<Alarm> _activeAlarms = [];
   String _status = 'Startar…';
 
   @override
@@ -86,6 +98,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _history.attachScanner(_scanner);
     await _energy.init();
     _energy.attachScanner(_scanner);
+    await _appliances.open();
+    _classifier.setLibrary(await _appliances.all());
+    _classifier.attachScanner(_scanner);
+    _alarms.attach(scanner: _scanner, classifier: _classifier);
 
     _sub = _scanner.stream.listen((s) {
       setState(() {
@@ -96,6 +112,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _energySub = _energy.stream.listen((_) {
       if (mounted) setState(() {});
     });
+    _classSub = _classifier.stream.listen((r) {
+      _alarms.updateActiveAppliances(r.activeAppliances);
+      if (mounted) setState(() => _classification = r);
+    });
+    _alarmSub = _alarms.stream.listen((a) {
+      if (mounted) setState(() => _activeAlarms = a);
+    });
+    _applianceChangesSub = _appliances.changes.listen((_) async {
+      _classifier.setLibrary(await _appliances.all());
+    });
     await _scanner.start();
     setState(() => _status = 'Söker efter Victron…');
   }
@@ -104,9 +130,15 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _sub?.cancel();
     _energySub?.cancel();
+    _classSub?.cancel();
+    _alarmSub?.cancel();
+    _applianceChangesSub?.cancel();
     _scanner.dispose();
     _history.close();
     _energy.dispose();
+    _classifier.dispose();
+    _alarms.dispose();
+    _appliances.close();
     WakelockPlus.disable();
     super.dispose();
   }
@@ -142,6 +174,14 @@ class _HomeScreenState extends State<HomeScreen> {
                           )),
                       const SizedBox(width: 12),
                       IconButton(
+                        icon: const Icon(Icons.electrical_services, size: 22),
+                        color: const Color(0xFF6B7280),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: _openAppliances,
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
                         icon: const Icon(Icons.show_chart, size: 22),
                         color: const Color(0xFF6B7280),
                         padding: EdgeInsets.zero,
@@ -166,6 +206,15 @@ class _HomeScreenState extends State<HomeScreen> {
   void _openHistory() {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => HistoryScreen(store: _history),
+    ));
+  }
+
+  void _openAppliances() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => AppliancesScreen(
+        store: _appliances,
+        scanner: _scanner,
+      ),
     ));
   }
 
@@ -266,6 +315,16 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
+        const SizedBox(height: 16),
+        ..._activeAlarms.map(_alarmBanner),
+        if (_classification != null && _classification!.activeAppliances.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Aktivt nu: ${_classification!.activeAppliances.map((a) => a.name).join(", ")}',
+              style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 13),
+            ),
+          ),
         const Spacer(),
         if (shunt?.timeToGoMinutes != null)
           Text('Tid kvar: ${_formatMinutes(shunt!.timeToGoMinutes!)}',
@@ -288,6 +347,28 @@ class _HomeScreenState extends State<HomeScreen> {
     final h = m ~/ 60;
     final mm = m % 60;
     return h > 0 ? '${h}h ${mm}m' : '${mm}m';
+  }
+
+  Widget _alarmBanner(Alarm a) {
+    final c = switch (a.level) {
+      AlarmLevel.emergency => const Color(0xFFEF4444),
+      AlarmLevel.critical => const Color(0xFFEF4444),
+      AlarmLevel.warn => const Color(0xFFFBBF24),
+      AlarmLevel.info => const Color(0xFF4ADE80),
+    };
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.15),
+        border: Border.all(color: c, width: 1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        a.message,
+        style: TextStyle(color: c, fontSize: 13),
+      ),
+    );
   }
 }
 
