@@ -286,7 +286,7 @@ jobs:
           cat "$APPBUILD"
 
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --split-per-abi
 
       - name: Verifiera APK-signatur
         run: |
