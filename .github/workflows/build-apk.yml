@@ -157,6 +157,94 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Konfigurera release-signering (om secrets finns)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "Ingen KEYSTORE_BASE64 — bygger med debug-signering (varje APK får ny signatur)"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/vagnkoll-release.jks
+          cat > android/key.properties <<EOF
+          storeFile=vagnkoll-release.jks
+          storePassword=${KEYSTORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          EOF
+          # Patcha app/build.gradle.kts för att läsa key.properties
+          APPBUILD=$(ls android/app/build.gradle android/app/build.gradle.kts 2>/dev/null | head -1)
+          python3 <<PY
+          import re
+          p = "$APPBUILD"
+          s = open(p).read()
+          is_kts = p.endswith(".kts")
+          if "key.properties" in s:
+              print("Redan patchad")
+          else:
+              if is_kts:
+                  top = '''import java.util.Properties
+          import java.io.FileInputStream
+
+          val keystoreProperties = Properties()
+          val keystorePropertiesFile = rootProject.file("key.properties")
+          if (keystorePropertiesFile.exists()) {
+              keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+          }
+
+          '''
+                  signing = '''
+              signingConfigs {
+                  create("release") {
+                      if (keystoreProperties.containsKey("storeFile")) {
+                          storeFile = file(keystoreProperties["storeFile"] as String)
+                          storePassword = keystoreProperties["storePassword"] as String
+                          keyAlias = keystoreProperties["keyAlias"] as String
+                          keyPassword = keystoreProperties["keyPassword"] as String
+                      }
+                  }
+              }
+          '''
+                  s = top + s
+                  # Lägg in signingConfigs och pekade ut release-build på den
+                  s = re.sub(r'(android \{)', r'\1' + signing, s, count=1)
+                  s = re.sub(r'(buildTypes \{\s*release \{)',
+                             r'\1\n            signingConfig = signingConfigs.getByName("release")',
+                             s, count=1)
+              else:
+                  top = '''def keystoreProperties = new Properties()
+          def keystorePropertiesFile = rootProject.file('key.properties')
+          if (keystorePropertiesFile.exists()) {
+              keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+          }
+
+          '''
+                  signing = '''
+              signingConfigs {
+                  release {
+                      if (keystoreProperties['storeFile']) {
+                          storeFile file(keystoreProperties['storeFile'])
+                          storePassword keystoreProperties['storePassword']
+                          keyAlias keystoreProperties['keyAlias']
+                          keyPassword keystoreProperties['keyPassword']
+                      }
+                  }
+              }
+          '''
+                  s = top + s
+                  s = re.sub(r'(android \{)', r'\1' + signing, s, count=1)
+                  s = re.sub(r'(buildTypes \{\s*release \{)',
+                             r'\1\n            signingConfig signingConfigs.release',
+                             s, count=1)
+              open(p, "w").write(s)
+              print("Patchade", p, "för release-signering")
+          PY
+          echo "--- Patchad $APPBUILD ---"
+          cat "$APPBUILD"
+
       - name: Build APK
         run: flutter build apk --release
 

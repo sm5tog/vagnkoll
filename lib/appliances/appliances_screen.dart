@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -46,6 +49,23 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         title: const Text('Apparater'),
         backgroundColor: const Color(0xFF111827),
         actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) {
+              switch (v) {
+                case 'export':
+                  _export();
+                  break;
+                case 'import':
+                  _import();
+                  break;
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'export', child: Text('Exportera till fil')),
+              PopupMenuItem(value: 'import', child: Text('Importera från fil')),
+            ],
+          ),
           IconButton(
             icon: const Icon(Icons.add),
             onPressed: _startTraining,
@@ -102,6 +122,54 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _export() async {
+    final json = await widget.store.exportJson();
+    final bytes = utf8.encode(json);
+    final ts = DateTime.now().toIso8601String().substring(0, 16).replaceAll(':', '');
+    final path = await FilePicker.platform.saveFile(
+      dialogTitle: 'Spara apparatbibliotek',
+      fileName: 'vagnkoll-apparater-$ts.json',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+      bytes: bytes,
+    );
+    if (!mounted) return;
+    if (path != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Sparade ${_appliances.length} apparater'),
+      ));
+    }
+  }
+
+  Future<void> _import() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final file = result.files.first;
+    String content;
+    if (file.bytes != null) {
+      content = String.fromCharCodes(file.bytes!);
+    } else if (file.path != null) {
+      content = await File(file.path!).readAsString();
+    } else {
+      return;
+    }
+    try {
+      final n = await widget.store.importJson(content);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Importerade $n apparater'),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Fel vid import: $e'),
+      ));
+    }
   }
 
   Future<void> _startTraining() async {
