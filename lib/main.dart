@@ -237,6 +237,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (_) => AppliancesScreen(
         store: _appliances,
         scanner: _scanner,
+        classifier: _classifier,
       ),
     ));
   }

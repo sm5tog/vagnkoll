@@ -7,13 +7,20 @@ import 'package:flutter/services.dart';
 
 import '../victron/victron_scanner.dart';
 import 'appliance_store.dart';
+import 'classifier.dart';
 import 'load_calculator.dart';
 import 'trainer.dart';
 
 class AppliancesScreen extends StatefulWidget {
   final ApplianceStore store;
   final VictronScanner scanner;
-  const AppliancesScreen({super.key, required this.store, required this.scanner});
+  final Classifier? classifier;
+  const AppliancesScreen({
+    super.key,
+    required this.store,
+    required this.scanner,
+    this.classifier,
+  });
 
   @override
   State<AppliancesScreen> createState() => _AppliancesScreenState();
@@ -180,6 +187,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
       builder: (_) => const _TrainDialog(),
     );
     if (result == null || !mounted) return;
+    widget.classifier?.pause();
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => _TrainingScreen(
         scanner: widget.scanner,
@@ -187,6 +195,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         spec: result,
       ),
     ));
+    widget.classifier?.resume();
   }
 
   Future<void> _editAppliance(Appliance a) async {
@@ -200,8 +209,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
       return;
     }
     if (action.retrain) {
-      // Träna om: starta träningsflödet med samma namn/kategori,
-      // och ersätt den gamla efter att den nya sparats.
+      widget.classifier?.pause();
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => _TrainingScreen(
           scanner: widget.scanner,
@@ -210,6 +218,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
           replaceExistingId: a.id,
         ),
       ));
+      widget.classifier?.resume();
     } else {
       // Bara metadata ändrad
       await widget.store.updateMetadata(a.id!, action.name, action.category);
@@ -410,7 +419,6 @@ class _TrainingScreenState extends State<_TrainingScreen> {
   StreamSubscription<TrainingSession>? _sub;
   bool _started = false;
   bool _finished = false;
-  Timer? _ticker;
   double _liveLoad = 0;
   StreamSubscription<VictronState>? _vSub;
 
@@ -429,18 +437,13 @@ class _TrainingScreenState extends State<_TrainingScreen> {
       name: widget.spec.name,
       category: widget.spec.category,
     );
-    _sub = _trainer.events.listen((_) {
-      if (mounted) setState(() {});
-    });
-    _ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    _sub = _trainer.events.listen((s) {
       if (!mounted) return;
       setState(() {});
-      final s = _trainer.session;
-      if (s != null && s.phase == TrainingPhase.done && !_finished) {
+      if (s.phase == TrainingPhase.done && !_finished) {
         _finished = true;
         _save();
       }
-      // Timeout hanteras av användaren med "Tillbaka"-knappen i UI:t
     });
     setState(() => _started = true);
   }
@@ -473,7 +476,6 @@ class _TrainingScreenState extends State<_TrainingScreen> {
 
   @override
   void dispose() {
-    _ticker?.cancel();
     _sub?.cancel();
     _vSub?.cancel();
     _trainer.dispose();

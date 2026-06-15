@@ -49,9 +49,10 @@ class Classifier {
   ClassificationResult? _last;
   ClassificationResult? get last => _last;
 
+  bool _paused = false;
   final List<_Reading> _history = [];
   bool _isRecording = false;
-  bool _recordingIsOn = true; // true = on-event, false = off-event
+  bool _recordingIsOn = true;
   final List<double> _liveTrace = [];
   double _recordBaseline = 0;
   Timer? _recordTimer;
@@ -86,7 +87,21 @@ class Classifier {
     _sub = scanner.stream.listen(_onState);
   }
 
+  /// Pausar klassificering (t.ex. under träning, för att frigöra CPU).
+  void pause() {
+    _paused = true;
+    _recordTimer?.cancel();
+    _isRecording = false;
+    _history.clear();
+  }
+
+  void resume() {
+    _paused = false;
+  }
+
   void _onState(VictronState s) {
+    if (_paused) return;
+
     final load = LoadCalculator.load(s);
     if (load == null) return;
 
@@ -97,8 +112,6 @@ class Classifier {
     if (!_isRecording) {
       _checkForEvent();
     }
-
-    _emit();
   }
 
   void _checkForEvent() {
@@ -172,14 +185,17 @@ class Classifier {
     }
 
     if (best != null && bestScore >= _matchThreshold && best.id != null) {
+      bool changed = false;
       if (_recordingIsOn) {
-        _activeIds.add(best.id!);
+        changed = _activeIds.add(best.id!);
       } else {
-        _activeIds.remove(best.id!);
+        changed = _activeIds.remove(best.id!);
       }
-      _persist();
+      if (changed) {
+        _persist();
+        _emit();
+      }
     }
-    _emit();
   }
 
   void _persist() {

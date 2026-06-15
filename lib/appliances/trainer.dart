@@ -94,7 +94,9 @@ class Trainer {
     );
     _enterPhase(TrainingPhase.baseline);
     _sub = scanner.stream.listen(_onState);
-    _tick = Timer.periodic(const Duration(milliseconds: 200), (_) => _tickFn());
+    // Långsam loop som mest hanterar timeouts; fasövergångar triggas
+    // egentligen av samplen själva via _onState.
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) => _tickFn());
   }
 
   void _enterPhase(TrainingPhase phase) {
@@ -115,7 +117,6 @@ class Trainer {
     switch (s.phase) {
       case TrainingPhase.baseline:
         if (s.phaseAge >= baselineDuration) {
-          // Beräkna offStateBaseline från senaste samplen
           if (s._waitBuffer.isNotEmpty) {
             s.offStateBaseline = s._waitBuffer
                     .map((e) => e.load)
@@ -137,19 +138,9 @@ class Trainer {
         }
         break;
 
-      case TrainingPhase.recordingOn:
-        // Hanteras av _captureTimer
-        break;
-      case TrainingPhase.recordingOff:
-        // Hanteras av _captureTimer
-        break;
-      case TrainingPhase.idle:
-      case TrainingPhase.done:
-      case TrainingPhase.timeout:
+      default:
         break;
     }
-
-    _events.add(s);
   }
 
   void _onState(VictronState st) {
@@ -230,8 +221,8 @@ class Trainer {
       if (scanner == null) return;
       final load = LoadCalculator.load(scanner.current);
       if (load == null) return;
-      // Delta från recording-baseline
       s.currentRecording.add(load - s._recordingBaseline);
+      _events.add(s); // Uppdatera progress-bar
       if (s.currentRecording.length >= targetLen) {
         _captureTimer?.cancel();
         _finishRecording(s, isOn: isOn);
