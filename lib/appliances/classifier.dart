@@ -2,10 +2,9 @@ import 'dart:async';
 
 import '../victron/victron_scanner.dart';
 import 'appliance_store.dart';
-import 'load_calculator.dart';
 
 class ClassificationResult {
-  final double totalLoadAmps;        // utjämnad last (last 5 sek)
+  final double totalLoadAmps;        // utjämnad last
   final List<Appliance> activeAppliances;
   final double unexplainedAmps;
   ClassificationResult({
@@ -15,6 +14,14 @@ class ClassificationResult {
   });
 }
 
+class _Reading {
+  final DateTime time;
+  final double solarAmps;
+  final double shuntCurrent;
+  final double voltage;
+  _Reading(this.time, this.solarAmps, this.shuntCurrent, this.voltage);
+}
+
 class Classifier {
   List<Appliance> _appliances = [];
   final _result = StreamController<ClassificationResult>.broadcast();
@@ -22,17 +29,18 @@ class Classifier {
   ClassificationResult? _last;
   ClassificationResult? get last => _last;
 
-  // Stabilitetskrav: matchningen måste hålla i sig minst så här länge.
-  static const _stableDuration = Duration(seconds: 3);
+  // En matchning måste hålla i sig minst så här länge för att räknas
+  static const _stableDuration = Duration(seconds: 5);
 
-  // Utjämningsfönster — medel av senaste samplen för att dämpa BLE-timing-brus.
-  static const _smoothWindow = Duration(seconds: 5);
+  // Utjämningsfönster — separat för solar och shunt för att eliminera
+  // timing-skillnader mellan BLE-paket
+  static const _smoothWindow = Duration(seconds: 10);
 
   // Bortom maxavstånd från den faktiska lasten räknas ingen matchning alls.
   static const _maxMatchDistance = 0.3; // A
 
   final Map<int, DateTime> _firstSeen = {};
-  final List<MapEntry<DateTime, double>> _loadHistory = [];
+  final List<_Reading> _history = [];
 
   StreamSubscription<VictronState>? _sub;
 
@@ -46,22 +54,33 @@ class Classifier {
   }
 
   void _onState(VictronState s) {
-    final load = LoadCalculator.load(s);
-    if (load == null) return;
+    final voltage = s.shunt?.batteryVoltage ?? s.solar?.batteryVoltage;
+    final shuntCurrent = s.shunt?.current;
+    if (voltage == null || voltage.isNaN || voltage <= 0) return;
+    if (shuntCurrent == null || shuntCurrent.isNaN) return;
+    final solarW = s.solar?.pvPower ?? 0.0;
+    final solarAmps = solarW.isNaN ? 0.0 : solarW / voltage;
 
     final now = DateTime.now();
-    _loadHistory.add(MapEntry(now, load));
-    _loadHistory.removeWhere((e) => now.difference(e.key) > _smoothWindow);
+    _history.add(_Reading(now, solarAmps, shuntCurrent, voltage));
+    _history.removeWhere((r) => now.difference(r.time) > _smoothWindow);
 
-    // Utjämnad last = medel av senaste 5 sek
-    final smoothed = _loadHistory.isEmpty
-        ? load
-        : _loadHistory.map((e) => e.value).reduce((a, b) => a + b) /
-            _loadHistory.length;
+    if (_history.isEmpty) return;
 
-    final candidates = _bestSubset(smoothed);
+    // Utjämna solar och shunt VAR FÖR SIG. Detta är nyckeln: om
+    // solar-paket och shunt-paket kommer i otakt blir den momentana
+    // load-beräkningen instabil. Genom att jämna ut dem separat över
+    // ett gemensamt fönster försvinner timing-mismatch-spikar.
+    final n = _history.length.toDouble();
+    final smoothSolar =
+        _history.map((r) => r.solarAmps).reduce((a, b) => a + b) / n;
+    final smoothShunt =
+        _history.map((r) => r.shuntCurrent).reduce((a, b) => a + b) / n;
+    final smoothedLoad = (smoothSolar - smoothShunt).clamp(0.0, double.infinity);
 
-    // Stabilitetsfilter — kandidat måste ha matchat i ≥ 3 sek
+    final candidates = _bestSubset(smoothedLoad);
+
+    // Stabilitetsfilter — kandidat måste ha matchat i ≥ 5 sek
     final candidateIds = candidates.map((a) => a.id ?? -1).toSet();
     _firstSeen.removeWhere((id, _) => !candidateIds.contains(id));
     final stable = <Appliance>[];
@@ -74,10 +93,10 @@ class Classifier {
     }
 
     final stableSum = stable.fold<double>(0, (s, a) => s + a.steadyAvg);
-    final unexplained = (smoothed - stableSum).clamp(0.0, double.infinity);
+    final unexplained = (smoothedLoad - stableSum).clamp(0.0, double.infinity);
 
     final result = ClassificationResult(
-      totalLoadAmps: smoothed,
+      totalLoadAmps: smoothedLoad,
       activeAppliances: stable,
       unexplainedAmps: unexplained,
     );
@@ -91,7 +110,6 @@ class Classifier {
     final n = _appliances.length;
     if (n == 0) return const [];
     if (n > 12) {
-      // För många apparater för exhaustiv sökning — fall tillbaka på girig
       return _greedyFallback(load);
     }
     final total = 1 << n;

@@ -27,20 +27,38 @@ class VictronScanner {
   final _stateController = StreamController<VictronState>.broadcast();
   final _state = VictronState();
   StreamSubscription<List<ScanResult>>? _scanSub;
+  Timer? _watchdog;
+  DateTime? _lastVictronPacket;
 
   Stream<VictronState> get stream => _stateController.stream;
   VictronState get current => _state;
 
   Future<void> start() async {
-    // Lyssna på alla BLE-paket kontinuerligt
     _scanSub = FlutterBluePlus.scanResults.listen(_onScanResults);
     await FlutterBluePlus.startScan(
       continuousUpdates: true,
       removeIfGone: const Duration(seconds: 30),
     );
+    // Watchdog: starta om scanningen om inga Victron-paket på 20 sek
+    _watchdog = Timer.periodic(const Duration(seconds: 5), (_) async {
+      final last = _lastVictronPacket;
+      if (last == null) return;
+      if (DateTime.now().difference(last).inSeconds >= 20) {
+        // Försök starta om scannern
+        try {
+          await FlutterBluePlus.stopScan();
+          await Future.delayed(const Duration(milliseconds: 500));
+          await FlutterBluePlus.startScan(
+            continuousUpdates: true,
+            removeIfGone: const Duration(seconds: 30),
+          );
+        } catch (_) {}
+      }
+    });
   }
 
   Future<void> stop() async {
+    _watchdog?.cancel();
     await _scanSub?.cancel();
     await FlutterBluePlus.stopScan();
   }
@@ -101,6 +119,8 @@ class VictronScanner {
         continue;
       }
       final advert = result.advert!;
+
+      _lastVictronPacket = DateTime.now();
 
       if (match.kind == 'shunt') {
         // Diagnostik: spara de dekrypterade bytes så vi kan se rätt layout
