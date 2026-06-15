@@ -31,6 +31,7 @@ class AlarmEngine {
   // Tid en orsak måste hålla i sig innan vi larmar
   static const _inverterIdleDelay = Duration(minutes: 5);
   DateTime? _inverterFirstSeen;
+  DateTime? _highLoadFirstSeen;
 
   StreamSubscription<VictronState>? _vSub;
   StreamSubscription<ClassificationResult>? _cSub;
@@ -53,9 +54,33 @@ class AlarmEngine {
 
     _evaluateSoc(s);
     _evaluateInverterIdle(s);
+    _evaluateHighLoad(s);
     _evaluateWarnAppliances();
 
     _controller.add(current);
+  }
+
+  void _evaluateHighLoad(VictronState s) {
+    final voltage = s.shunt?.batteryVoltage ?? s.solar?.batteryVoltage;
+    if (voltage == null || voltage <= 0) return;
+    final loadA = (s.solar?.pvPower ?? 0.0) / voltage - (s.shunt?.current ?? 0.0);
+    final loadW = loadA * voltage;
+    if (loadW >= kHighLoadWattsThreshold) {
+      _highLoadFirstSeen ??= DateTime.now();
+      final elapsed = DateTime.now().difference(_highLoadFirstSeen!);
+      if (elapsed.inMinutes >= kHighLoadMinutes) {
+        _set(Alarm(
+          id: 'high_load',
+          message:
+              'Hög förbrukning: ${loadW.toStringAsFixed(0)} W i ${elapsed.inMinutes} min — vad är på?',
+          level: AlarmLevel.warn,
+          since: _highLoadFirstSeen!,
+        ));
+      }
+    } else {
+      _highLoadFirstSeen = null;
+      _clear('high_load');
+    }
   }
 
   void _evaluateSoc(VictronState s) {

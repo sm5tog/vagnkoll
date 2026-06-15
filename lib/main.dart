@@ -14,6 +14,7 @@ import 'history/history_screen.dart';
 import 'history/history_store.dart';
 import 'secrets.dart';
 import 'victron/victron_scanner.dart';
+import 'web/web_server.dart';
 
 void main() {
   runApp(const VagnkollApp());
@@ -66,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final _appliances = ApplianceStore();
   final _classifier = Classifier();
   final _alarms = AlarmEngine();
+  WebServer? _webServer;
   StreamSubscription<VictronState>? _sub;
   StreamSubscription<EnergyCounter>? _energySub;
   StreamSubscription<ClassificationResult>? _classSub;
@@ -126,6 +128,15 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     await _scanner.start();
     setState(() => _status = 'Söker efter Victron…');
+
+    // Starta webbservern (lokalt WiFi)
+    _webServer = WebServer(
+      scanner: _scanner,
+      energy: _energy,
+      classifier: _classifier,
+      alarms: _alarms,
+    );
+    await _webServer!.start();
     // Tickar var sekund för att uppdatera telemetri-indikatorn
     _telemetryTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
@@ -140,6 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _alarmSub?.cancel();
     _applianceChangesSub?.cancel();
     _telemetryTimer?.cancel();
+    _webServer?.stop();
     _scanner.dispose();
     _history.close();
     _energy.dispose();
@@ -158,6 +170,19 @@ class _HomeScreenState extends State<HomeScreen> {
     if (age <= 3) return 0;
     if (age <= 10) return 1;
     return 2;
+  }
+
+  /// True om respektive enhet har skickat data senaste 5 sek
+  bool _shuntFresh() {
+    final t = _state?.shuntUpdated;
+    if (t == null) return false;
+    return DateTime.now().difference(t).inSeconds <= 5;
+  }
+
+  bool _solarFresh() {
+    final t = _state?.solarUpdated;
+    if (t == null) return false;
+    return DateTime.now().difference(t).inSeconds <= 5;
   }
 
   @override
@@ -289,6 +314,7 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         _BigStat(
           label: 'BATTERI',
+          labelColor: _shuntFresh() ? const Color(0xFF4ADE80) : const Color(0xFF6B7280),
           value: shunt?.soc.toStringAsFixed(1) ?? '—',
           unit: '%',
           color: _socColor(shunt?.soc),
@@ -306,6 +332,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               child: _SmallStat(
                 label: 'Sol',
+                labelColor: _solarFresh() ? const Color(0xFF4ADE80) : const Color(0xFF6B7280),
                 value: solarA != null && solar != null
                     ? '${solarA.toStringAsFixed(1)}A/${solar.pvPower.toStringAsFixed(0)}W'
                     : '—',
@@ -363,6 +390,14 @@ class _HomeScreenState extends State<HomeScreen> {
         if (solar != null)
           Text('Laddläge: ${solar.chargeStateName}',
               style: const TextStyle(color: Color(0xFF9CA3AF))),
+        if (_webServer?.ipAddress != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Webb: http://${_webServer!.ipAddress}:${WebServer.port}',
+              style: const TextStyle(color: Color(0xFF6B7280), fontSize: 11),
+            ),
+          ),
       ],
     );
   }
@@ -436,12 +471,14 @@ class _HomeScreenState extends State<HomeScreen> {
 class _BigStat extends StatelessWidget {
   final String label, value, unit;
   final Color color;
+  final Color? labelColor;
   final List<String>? rightLines;
   const _BigStat({
     required this.label,
     required this.value,
     required this.unit,
     required this.color,
+    this.labelColor,
     this.rightLines,
   });
 
@@ -456,7 +493,7 @@ class _BigStat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 2, fontSize: 11)),
+          Text(label, style: TextStyle(color: labelColor ?? const Color(0xFF6B7280), letterSpacing: 2, fontSize: 11)),
           const SizedBox(height: 2),
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
@@ -503,7 +540,8 @@ class _BigStat extends StatelessWidget {
 class _SmallStat extends StatelessWidget {
   final String label, value, unit;
   final Color? color;
-  const _SmallStat({required this.label, required this.value, required this.unit, this.color});
+  final Color? labelColor;
+  const _SmallStat({required this.label, required this.value, required this.unit, this.color, this.labelColor});
 
   @override
   Widget build(BuildContext context) {
@@ -517,7 +555,7 @@ class _SmallStat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 1, fontSize: 10)),
+          Text(label, style: TextStyle(color: labelColor ?? const Color(0xFF6B7280), letterSpacing: 1, fontSize: 10)),
           const SizedBox(height: 2),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,

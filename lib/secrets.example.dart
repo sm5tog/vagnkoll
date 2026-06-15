@@ -42,3 +42,7 @@ const double kSocEmergency = 15.0;
 
 // Inverter
 const double kInverterIdleAmps = 0.5;
+
+// Hög-förbrukning-larm
+const double kHighLoadWattsThreshold = 72.0;
+const int kHighLoadMinutes = 10;
