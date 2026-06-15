@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'build_info.dart';
+import 'energy_counter.dart';
 import 'history/history_screen.dart';
 import 'history/history_store.dart';
 import 'secrets.dart';
@@ -57,7 +58,9 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final _scanner = VictronScanner();
   final _history = HistoryStore();
+  final _energy = EnergyCounter();
   StreamSubscription<VictronState>? _sub;
+  StreamSubscription<EnergyCounter>? _energySub;
   VictronState? _state;
   String _status = 'Startar…';
 
@@ -81,12 +84,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     await _history.open();
     _history.attachScanner(_scanner);
+    await _energy.init();
+    _energy.attachScanner(_scanner);
 
     _sub = _scanner.stream.listen((s) {
       setState(() {
         _state = s;
         _status = '';
       });
+    });
+    _energySub = _energy.stream.listen((_) {
+      if (mounted) setState(() {});
     });
     await _scanner.start();
     setState(() => _status = 'Söker efter Victron…');
@@ -95,8 +103,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _sub?.cancel();
+    _energySub?.cancel();
     _scanner.dispose();
     _history.close();
+    _energy.dispose();
     WakelockPlus.disable();
     super.dispose();
   }
@@ -182,6 +192,9 @@ class _HomeScreenState extends State<HomeScreen> {
           value: shunt?.soc.toStringAsFixed(1) ?? '—',
           unit: '%',
           color: _socColor(shunt?.soc),
+          subtitle: shunt?.soc != null
+              ? '${(kBatteryCapacityAh * shunt!.soc / 100).toStringAsFixed(1)} Ah kvar'
+              : null,
         ),
         const SizedBox(height: 20),
         Row(
@@ -231,6 +244,28 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _SmallStat(
+                label: 'Använt idag',
+                value: _energy.usedAhToday.toStringAsFixed(1),
+                unit: 'Ah',
+                color: const Color(0xFFEF4444),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _SmallStat(
+                label: 'Laddat idag',
+                value: _energy.solarAhToday.toStringAsFixed(1),
+                unit: 'Ah',
+                color: const Color(0xFF4ADE80),
+              ),
+            ),
+          ],
+        ),
         const Spacer(),
         if (shunt?.timeToGoMinutes != null)
           Text('Tid kvar: ${_formatMinutes(shunt!.timeToGoMinutes!)}',
@@ -259,7 +294,14 @@ class _HomeScreenState extends State<HomeScreen> {
 class _BigStat extends StatelessWidget {
   final String label, value, unit;
   final Color color;
-  const _BigStat({required this.label, required this.value, required this.unit, required this.color});
+  final String? subtitle;
+  const _BigStat({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.color,
+    this.subtitle,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -278,11 +320,16 @@ class _BigStat extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(value, style: TextStyle(fontSize: 72, fontWeight: FontWeight.w200, color: color)),
+              Text(value, style: TextStyle(fontSize: 64, fontWeight: FontWeight.w200, color: color)),
               const SizedBox(width: 6),
-              Text(unit, style: TextStyle(fontSize: 28, color: color.withOpacity(0.7))),
+              Text(unit, style: TextStyle(fontSize: 26, color: color.withOpacity(0.7))),
             ],
           ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 4),
+            Text(subtitle!,
+                style: TextStyle(fontSize: 14, color: color.withOpacity(0.7))),
+          ],
         ],
       ),
     );
