@@ -155,6 +155,19 @@ class ApplianceStore {
     return id;
   }
 
+  /// Uppdaterar bara namn/kategori utan att röra signaturen.
+  Future<void> updateMetadata(int id, String name, ApplianceCategory category) async {
+    final db = _db;
+    if (db == null) return;
+    await db.update(
+      'appliances',
+      {'name': name, 'category': category.name},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    _changes.add(null);
+  }
+
   Future<void> delete(int id) async {
     await _db?.delete('appliances', where: 'id = ?', whereArgs: [id]);
     _changes.add(null);

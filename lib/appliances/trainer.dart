@@ -7,9 +7,17 @@ import 'load_calculator.dart';
 
 enum TrainingPhase {
   idle,
-  countdown,    // 3-2-1 nedräkning innan apparat slås på
-  measuring,    // mäter under [duration] sekunder
+  baseline,     // 3 sek mätning av basström (apparaten av)
+  waiting,      // väntar på att apparaten ska slås på (auto-detekt)
+  measuring,    // mäter under [duration] sekunder från detekterad start
   done,
+  timeout,      // användaren slog aldrig på apparaten
+}
+
+class _RecentSample {
+  final DateTime time;
+  final double load;
+  _RecentSample(this.time, this.load);
 }
 
 class TrainingSession {
@@ -17,10 +25,20 @@ class TrainingSession {
   final ApplianceCategory category;
   final Duration duration;
   final Duration inrushWindow;
+  final Duration baselineDuration;
+  final Duration waitTimeout;
+
+  // Trigger när delta ≥ threshold under [confirmSamples] efter varandra
+  final double triggerThreshold;
+
   final List<double> samples = [];
   final List<DateTime> sampleTimes = [];
+  final List<double> baselineSamples = [];
+  final List<_RecentSample> _waitBuffer = [];
+
   double? baselineAmps;
-  DateTime? countdownStartedAt;
+  DateTime? baselineStartedAt;
+  DateTime? waitingStartedAt;
   DateTime? sampleStartedAt;
   TrainingPhase phase = TrainingPhase.idle;
 
@@ -29,21 +47,24 @@ class TrainingSession {
     required this.category,
     this.duration = const Duration(seconds: 20),
     this.inrushWindow = const Duration(seconds: 2),
+    this.baselineDuration = const Duration(seconds: 3),
+    this.waitTimeout = const Duration(seconds: 60),
+    this.triggerThreshold = 0.1,
   });
 
-  /// 3 sekunder nedräkning innan mätning startar
-  Duration get countdownDuration => const Duration(seconds: 3);
-
-  int get countdownSecondsLeft {
-    if (countdownStartedAt == null) return 3;
-    final elapsed = DateTime.now().difference(countdownStartedAt!);
-    final left = countdownDuration - elapsed;
+  int get baselineSecondsLeft {
+    if (baselineStartedAt == null) return baselineDuration.inSeconds;
+    final left = baselineDuration - DateTime.now().difference(baselineStartedAt!);
     return left.inMilliseconds <= 0 ? 0 : (left.inMilliseconds / 1000).ceil();
   }
 
-  bool get isCountdownComplete =>
-      countdownStartedAt != null &&
-      DateTime.now().difference(countdownStartedAt!) >= countdownDuration;
+  bool get isBaselineComplete =>
+      baselineStartedAt != null &&
+      DateTime.now().difference(baselineStartedAt!) >= baselineDuration;
+
+  bool get isWaitTimedOut =>
+      waitingStartedAt != null &&
+      DateTime.now().difference(waitingStartedAt!) >= waitTimeout;
 
   bool get isMeasurementComplete =>
       sampleStartedAt != null &&
@@ -66,8 +87,10 @@ class Trainer {
 
   TrainingSession? get session => _session;
 
-  /// Startar nedräkning. Användaren ska SLÅ PÅ apparaten vid 0.
-  /// Vi mäter baseline under nedräkningen.
+  /// Startar mätningen. Tre faser:
+  /// 1. baseline (3s) — mäter basström, apparaten ska vara av
+  /// 2. waiting — väntar på att apparaten ska slås på (auto-detekt)
+  /// 3. measuring (20s) — börjar i samma stund som ökningen upptäcks
   void start({
     required VictronScanner scanner,
     required String name,
@@ -83,17 +106,26 @@ class Trainer {
 
     final s = scanner.current;
     _session!.baselineAmps = LoadCalculator.load(s) ?? 0.0;
-    _session!.countdownStartedAt = DateTime.now();
-    _session!.phase = TrainingPhase.countdown;
+    _session!.baselineStartedAt = DateTime.now();
+    _session!.phase = TrainingPhase.baseline;
 
     _sub = scanner.stream.listen(_onState);
     _tick = Timer.periodic(const Duration(milliseconds: 100), (_) {
       final session = _session;
       if (session == null) return;
-      if (session.phase == TrainingPhase.countdown && session.isCountdownComplete) {
-        // Övergå till mätning
-        session.phase = TrainingPhase.measuring;
-        session.sampleStartedAt = DateTime.now();
+
+      if (session.phase == TrainingPhase.baseline && session.isBaselineComplete) {
+        // Lås baseline (medel av samlade samples) och börja vänta
+        if (session.baselineSamples.isNotEmpty) {
+          session.baselineAmps =
+              session.baselineSamples.reduce((a, b) => a + b) /
+                  session.baselineSamples.length;
+        }
+        session.phase = TrainingPhase.waiting;
+        session.waitingStartedAt = DateTime.now();
+      } else if (session.phase == TrainingPhase.waiting && session.isWaitTimedOut) {
+        session.phase = TrainingPhase.timeout;
+        _tick?.cancel();
       } else if (session.phase == TrainingPhase.measuring &&
           session.isMeasurementComplete) {
         session.phase = TrainingPhase.done;
@@ -110,14 +142,41 @@ class Trainer {
     final load = LoadCalculator.load(s);
     if (load == null) return;
 
-    if (session.phase == TrainingPhase.countdown) {
-      // Uppdatera baseline löpande under nedräkningen
-      session.baselineAmps = load;
+    if (session.phase == TrainingPhase.baseline) {
+      session.baselineSamples.add(load);
+    } else if (session.phase == TrainingPhase.waiting) {
+      _checkForTrigger(session, load);
     } else if (session.phase == TrainingPhase.measuring) {
       final delta = (load - (session.baselineAmps ?? 0))
           .clamp(0.0, double.infinity);
       session.samples.add(delta);
       session.sampleTimes.add(DateTime.now());
+    }
+  }
+
+  void _checkForTrigger(TrainingSession session, double load) {
+    final baseline = session.baselineAmps ?? 0;
+    final delta = load - baseline;
+    final now = DateTime.now();
+
+    if (delta >= session.triggerThreshold) {
+      session._waitBuffer.add(_RecentSample(now, load));
+      // Behöver 2 över-tröskel-samples i rad (filtrera bort spikar)
+      if (session._waitBuffer.length >= 2) {
+        // Trigger! Använd FÖRSTA över-tröskel-samplet som t=0 så vi
+        // fångar hela inrush-spiken.
+        final start = session._waitBuffer.first;
+        session.phase = TrainingPhase.measuring;
+        session.sampleStartedAt = start.time;
+        for (final t in session._waitBuffer) {
+          session.samples.add((t.load - baseline).clamp(0.0, double.infinity));
+          session.sampleTimes.add(t.time);
+        }
+        session._waitBuffer.clear();
+      }
+    } else {
+      // Återställ om vi tappade tröskelnivån (ostabilt)
+      session._waitBuffer.clear();
     }
   }
 

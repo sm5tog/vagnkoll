@@ -233,6 +233,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _liveView(shunt, solar) {
+    // Räkna momentana värden
+    final voltage = shunt?.batteryVoltage ?? solar?.batteryVoltage;
+    final solarA = (solar != null && voltage != null && voltage > 0)
+        ? (solar.pvPower / voltage)
+        : null;
+    final loadA = (solarA != null && shunt?.current != null)
+        ? (solarA - shunt!.current).clamp(0.0, double.infinity)
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -289,6 +297,28 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? (solar.yieldTodayWh / 1000).toStringAsFixed(2)
                     : '—',
                 unit: 'kWh',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _SmallStat(
+                label: 'Förbrukning',
+                value: loadA?.toStringAsFixed(2) ?? '—',
+                unit: 'A',
+                color: const Color(0xFFEF4444),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _SmallStat(
+                label: 'Laddning',
+                value: solarA?.toStringAsFixed(2) ?? '—',
+                unit: 'A',
+                color: const Color(0xFF4ADE80),
               ),
             ),
           ],
