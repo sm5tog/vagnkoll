@@ -5,6 +5,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'build_info.dart';
+import 'history/history_screen.dart';
+import 'history/history_store.dart';
 import 'secrets.dart';
 import 'victron/victron_scanner.dart';
 
@@ -54,6 +56,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _scanner = VictronScanner();
+  final _history = HistoryStore();
   StreamSubscription<VictronState>? _sub;
   VictronState? _state;
   String _status = 'Startar…';
@@ -76,6 +79,9 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _status = 'Bluetooth-rättigheter saknas');
       return;
     }
+    await _history.open();
+    _history.attachScanner(_scanner);
+
     _sub = _scanner.stream.listen((s) {
       setState(() {
         _state = s;
@@ -90,6 +96,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _sub?.cancel();
     _scanner.dispose();
+    _history.close();
     WakelockPlus.disable();
     super.dispose();
   }
@@ -98,6 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final shunt = _state?.shunt;
     final solar = _state?.solar;
+    final hasData = shunt != null || solar != null;
 
     return Scaffold(
       body: SafeArea(
@@ -115,18 +123,28 @@ class _HomeScreenState extends State<HomeScreen> {
                         fontSize: 14,
                         color: Color(0xFF6B7280),
                       )),
-                  Text('v$kBuildId',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Color(0xFF4B5563),
-                      )),
+                  Row(
+                    children: [
+                      Text('v$kBuildId',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF4B5563),
+                          )),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        icon: const Icon(Icons.show_chart, size: 22),
+                        color: const Color(0xFF6B7280),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: hasData ? _openHistory : null,
+                      ),
+                    ],
+                  ),
                 ],
               ),
               const SizedBox(height: 24),
               Expanded(
-                child: shunt == null && solar == null
-                    ? _waitingView()
-                    : _liveView(shunt, solar),
+                child: !hasData ? _waitingView() : _liveView(shunt, solar),
               ),
             ],
           ),
@@ -135,8 +153,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _openHistory() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => HistoryScreen(store: _history),
+    ));
+  }
+
   Widget _waitingView() {
-    final s = _state;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -145,36 +168,6 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 24),
           Text(_status,
               style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 16)),
-          const SizedBox(height: 32),
-          if (s != null) ...[
-            Text('BLE-enheter sedda: ${s.totalBleDevicesSeen}',
-                style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
-            Text('Victron-paket: ${s.victronAdvertsSeen}',
-                style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
-            Text('Dekrypterings-fel: ${s.decryptFailures} (${s.lastError ?? "-"})',
-                style: TextStyle(
-                  color: s.decryptFailures > 0
-                      ? const Color(0xFFEF4444)
-                      : const Color(0xFF6B7280),
-                  fontSize: 13,
-                )),
-            if (s.lastKeyMismatch != null)
-              Text('Key-check: ${s.lastKeyMismatch}',
-                  style: const TextStyle(color: Color(0xFFEF4444), fontSize: 11)),
-            if (s.lastRawHex != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text('Råa bytes (${s.lastRawLength}b):\n${s.lastRawHex}',
-                    style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11)),
-              ),
-            if (s.lastAllMfgKeys != null)
-              Text('Mfg-ID:n: ${s.lastAllMfgKeys}',
-                  style: const TextStyle(color: Color(0xFF4B5563), fontSize: 11)),
-            const SizedBox(height: 8),
-            Text('Förväntar:\n${kVictronDevices.map((d) => '  ${d.mac} (${d.name})').join('\n')}',
-                style: const TextStyle(color: Color(0xFF4B5563), fontSize: 10),
-                textAlign: TextAlign.left),
-          ],
         ],
       ),
     );
@@ -245,14 +238,6 @@ class _HomeScreenState extends State<HomeScreen> {
         if (solar != null)
           Text('Laddläge: ${solar.chargeStateName}',
               style: const TextStyle(color: Color(0xFF9CA3AF))),
-        if (_state?.lastShuntDecryptedHex != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              'Shunt-bytes: ${_state!.lastShuntDecryptedHex}',
-              style: const TextStyle(color: Color(0xFF4B5563), fontSize: 10),
-            ),
-          ),
       ],
     );
   }
