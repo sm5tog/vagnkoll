@@ -4,11 +4,10 @@ import '../victron/victron_scanner.dart';
 import 'appliance_store.dart';
 import 'load_calculator.dart';
 
-/// Vilka apparater appen tror är på just nu, baserat på live-ström.
 class ClassificationResult {
-  final double totalLoadAmps;
+  final double totalLoadAmps;        // utjämnad last (last 5 sek)
   final List<Appliance> activeAppliances;
-  final double unexplainedAmps; // ström som inte kan förklaras av träningsdata
+  final double unexplainedAmps;
   ClassificationResult({
     required this.totalLoadAmps,
     required this.activeAppliances,
@@ -23,13 +22,19 @@ class Classifier {
   ClassificationResult? _last;
   ClassificationResult? get last => _last;
 
-  StreamSubscription<VictronState>? _sub;
-
-  /// Min stabilitetstid: en apparat måste matcha minst så här länge innan
-  /// vi anser den aktiv. Filtrerar bort kortvariga spikar.
+  // Stabilitetskrav: matchningen måste hålla i sig minst så här länge.
   static const _stableDuration = Duration(seconds: 3);
 
+  // Utjämningsfönster — medel av senaste samplen för att dämpa BLE-timing-brus.
+  static const _smoothWindow = Duration(seconds: 5);
+
+  // Bortom maxavstånd från den faktiska lasten räknas ingen matchning alls.
+  static const _maxMatchDistance = 0.3; // A
+
   final Map<int, DateTime> _firstSeen = {};
+  final List<MapEntry<DateTime, double>> _loadHistory = [];
+
+  StreamSubscription<VictronState>? _sub;
 
   void setLibrary(List<Appliance> appliances) {
     _appliances = appliances;
@@ -44,43 +49,85 @@ class Classifier {
     final load = LoadCalculator.load(s);
     if (load == null) return;
 
-    // Hitta vilka tränade apparater som matchar nuvarande ström.
-    // Vi matchar mot STEADY-state-värdet (efter inrush), eftersom den
-    // typiska driften ligger där apparaten är på.
-    // Girig algoritm: sortera efter störst steady-ström och bortförklara
-    // aktuell last steg för steg.
-    final sorted = [..._appliances]..sort((a, b) => b.steadyAvg.compareTo(a.steadyAvg));
+    final now = DateTime.now();
+    _loadHistory.add(MapEntry(now, load));
+    _loadHistory.removeWhere((e) => now.difference(e.key) > _smoothWindow);
+
+    // Utjämnad last = medel av senaste 5 sek
+    final smoothed = _loadHistory.isEmpty
+        ? load
+        : _loadHistory.map((e) => e.value).reduce((a, b) => a + b) /
+            _loadHistory.length;
+
+    final candidates = _bestSubset(smoothed);
+
+    // Stabilitetsfilter — kandidat måste ha matchat i ≥ 3 sek
+    final candidateIds = candidates.map((a) => a.id ?? -1).toSet();
+    _firstSeen.removeWhere((id, _) => !candidateIds.contains(id));
+    final stable = <Appliance>[];
+    for (final a in candidates) {
+      final id = a.id ?? -1;
+      _firstSeen.putIfAbsent(id, () => now);
+      if (now.difference(_firstSeen[id]!) >= _stableDuration) {
+        stable.add(a);
+      }
+    }
+
+    final stableSum = stable.fold<double>(0, (s, a) => s + a.steadyAvg);
+    final unexplained = (smoothed - stableSum).clamp(0.0, double.infinity);
+
+    final result = ClassificationResult(
+      totalLoadAmps: smoothed,
+      activeAppliances: stable,
+      unexplainedAmps: unexplained,
+    );
+    _last = result;
+    _result.add(result);
+  }
+
+  /// Provar alla delmängder av apparater och returnerar den vars summa
+  /// är närmast den faktiska lasten — inom [_maxMatchDistance].
+  List<Appliance> _bestSubset(double load) {
+    final n = _appliances.length;
+    if (n == 0) return const [];
+    if (n > 12) {
+      // För många apparater för exhaustiv sökning — fall tillbaka på girig
+      return _greedyFallback(load);
+    }
+    final total = 1 << n;
+    List<Appliance>? best;
+    double bestDist = double.infinity;
+    for (var mask = 0; mask < total; mask++) {
+      double sum = 0;
+      final subset = <Appliance>[];
+      for (var i = 0; i < n; i++) {
+        if ((mask >> i) & 1 == 1) {
+          sum += _appliances[i].steadyAvg;
+          subset.add(_appliances[i]);
+        }
+      }
+      final dist = (sum - load).abs();
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = subset;
+      }
+    }
+    if (bestDist > _maxMatchDistance) return const [];
+    return best ?? const [];
+  }
+
+  List<Appliance> _greedyFallback(double load) {
+    final sorted = [..._appliances]
+      ..sort((a, b) => b.steadyAvg.compareTo(a.steadyAvg));
     final active = <Appliance>[];
     var remaining = load;
     for (final a in sorted) {
-      // Tolerans baserad på spridning i steady-state, med min/max-clamp
-      final tol = (a.steadyStd * 2).clamp(0.15, a.steadyAvg * 0.4 + 0.4);
-      if (remaining >= a.steadyAvg - tol) {
+      if (remaining >= a.steadyAvg - 0.15) {
         active.add(a);
         remaining -= a.steadyAvg;
       }
     }
-
-    // Stabilitetsfilter
-    final now = DateTime.now();
-    final activeIds = active.map((a) => a.id ?? -1).toSet();
-    _firstSeen.removeWhere((id, _) => !activeIds.contains(id));
-    final stableActive = <Appliance>[];
-    for (final a in active) {
-      final id = a.id ?? -1;
-      _firstSeen.putIfAbsent(id, () => now);
-      if (now.difference(_firstSeen[id]!) >= _stableDuration) {
-        stableActive.add(a);
-      }
-    }
-
-    final result = ClassificationResult(
-      totalLoadAmps: load,
-      activeAppliances: stableActive,
-      unexplainedAmps: remaining < 0 ? 0 : remaining,
-    );
-    _last = result;
-    _result.add(result);
+    return active;
   }
 
   void dispose() {

@@ -71,6 +71,7 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<ClassificationResult>? _classSub;
   StreamSubscription<List<Alarm>>? _alarmSub;
   StreamSubscription? _applianceChangesSub;
+  Timer? _telemetryTimer;
   VictronState? _state;
   ClassificationResult? _classification;
   List<Alarm> _activeAlarms = [];
@@ -124,6 +125,10 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     await _scanner.start();
     setState(() => _status = 'Söker efter Victron…');
+    // Tickar var sekund för att uppdatera telemetri-indikatorn
+    _telemetryTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -133,6 +138,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _classSub?.cancel();
     _alarmSub?.cancel();
     _applianceChangesSub?.cancel();
+    _telemetryTimer?.cancel();
     _scanner.dispose();
     _history.close();
     _energy.dispose();
@@ -141,6 +147,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _appliances.close();
     WakelockPlus.disable();
     super.dispose();
+  }
+
+  /// Returnerar telemetri-status: 0 = färsk (grön), 1 = stale (gul), 2 = död (röd)
+  int _telemetryStatus() {
+    final t = _state?.shuntUpdated ?? _state?.solarUpdated;
+    if (t == null) return 2;
+    final age = DateTime.now().difference(t).inSeconds;
+    if (age <= 3) return 0;
+    if (age <= 10) return 1;
+    return 2;
   }
 
   @override
@@ -159,12 +175,18 @@ class _HomeScreenState extends State<HomeScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('VAGNKOLL',
-                      style: TextStyle(
-                        letterSpacing: 4,
-                        fontSize: 14,
-                        color: Color(0xFF6B7280),
-                      )),
+                  Row(
+                    children: [
+                      _telemetryDot(),
+                      const SizedBox(width: 8),
+                      const Text('VAGNKOLL',
+                          style: TextStyle(
+                            letterSpacing: 4,
+                            fontSize: 14,
+                            color: Color(0xFF6B7280),
+                          )),
+                    ],
+                  ),
                   Row(
                     children: [
                       Text('v$kBuildId',
@@ -249,43 +271,22 @@ class _HomeScreenState extends State<HomeScreen> {
           value: shunt?.soc.toStringAsFixed(1) ?? '—',
           unit: '%',
           color: _socColor(shunt?.soc),
-          subtitle: shunt?.soc != null
-              ? '${(kBatteryCapacityAh * shunt!.soc / 100).toStringAsFixed(1)} Ah kvar'
-              : null,
+          rightLines: shunt == null
+              ? null
+              : [
+                  '${shunt.batteryVoltage.toStringAsFixed(2)} V',
+                  '${shunt.current >= 0 ? "+" : ""}${shunt.current.toStringAsFixed(2)} A',
+                  '${(kBatteryCapacityAh * shunt.soc / 100).toStringAsFixed(1)} Ah kvar',
+                ],
         ),
         const SizedBox(height: 10),
         Row(
           children: [
             Expanded(
               child: _SmallStat(
-                label: 'Spänning',
-                value: shunt?.batteryVoltage.toStringAsFixed(2) ?? '—',
-                unit: 'V',
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _SmallStat(
-                label: 'Ström',
-                value: shunt?.current.toStringAsFixed(1) ?? '—',
-                unit: 'A',
-                color: shunt != null
-                    ? (shunt.current >= 0
-                        ? const Color(0xFF4ADE80)
-                        : const Color(0xFFFBBF24))
-                    : null,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _SmallStat(
                 label: 'Sol',
                 value: solarA != null && solar != null
-                    ? '${solarA.toStringAsFixed(1)}A / ${solar.pvPower.toStringAsFixed(0)}W'
+                    ? '${solarA.toStringAsFixed(1)}A/${solar.pvPower.toStringAsFixed(0)}W'
                     : '—',
                 unit: '',
                 color: const Color(0xFFFBBF24),
@@ -358,6 +359,36 @@ class _HomeScreenState extends State<HomeScreen> {
     return h > 0 ? '${h}h ${mm}m' : '${mm}m';
   }
 
+  Widget _telemetryDot() {
+    final status = _telemetryStatus();
+    final color = switch (status) {
+      0 => const Color(0xFF4ADE80),
+      1 => const Color(0xFFFBBF24),
+      _ => const Color(0xFFEF4444),
+    };
+    final label = switch (status) {
+      0 => null,
+      1 => 'Försenat',
+      _ => 'Ingen signal',
+    };
+    return Row(
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+          ),
+        ),
+        if (label != null) ...[
+          const SizedBox(width: 6),
+          Text(label, style: TextStyle(color: color, fontSize: 11)),
+        ],
+      ],
+    );
+  }
+
   Widget _alarmBanner(Alarm a) {
     final c = switch (a.level) {
       AlarmLevel.emergency => const Color(0xFFEF4444),
@@ -384,13 +415,13 @@ class _HomeScreenState extends State<HomeScreen> {
 class _BigStat extends StatelessWidget {
   final String label, value, unit;
   final Color color;
-  final String? subtitle;
+  final List<String>? rightLines;
   const _BigStat({
     required this.label,
     required this.value,
     required this.unit,
     required this.color,
-    this.subtitle,
+    this.rightLines,
   });
 
   @override
@@ -407,20 +438,39 @@ class _BigStat extends StatelessWidget {
           Text(label, style: const TextStyle(color: Color(0xFF6B7280), letterSpacing: 2, fontSize: 11)),
           const SizedBox(height: 2),
           Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(value, style: TextStyle(fontSize: 56, fontWeight: FontWeight.w200, color: color, height: 1.0)),
-              const SizedBox(width: 6),
-              Text(unit, style: TextStyle(fontSize: 22, color: color.withOpacity(0.7))),
-              if (subtitle != null) ...[
-                const SizedBox(width: 12),
+              // SoC stora siffror till vänster
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text(value, style: TextStyle(fontSize: 56, fontWeight: FontWeight.w200, color: color, height: 1.0)),
+                  const SizedBox(width: 6),
+                  Text(unit, style: TextStyle(fontSize: 22, color: color.withOpacity(0.7))),
+                ],
+              ),
+              // Tre små rader till höger
+              if (rightLines != null)
                 Expanded(
-                  child: Text(subtitle!,
-                      textAlign: TextAlign.right,
-                      style: TextStyle(fontSize: 13, color: color.withOpacity(0.7))),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: rightLines!
+                          .map((line) => Text(
+                                line,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: color.withOpacity(0.85),
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ))
+                          .toList(),
+                    ),
+                  ),
                 ),
-              ],
             ],
           ),
         ],

@@ -17,7 +17,8 @@ enum TrainingPhase {
 class _RecentSample {
   final DateTime time;
   final double load;
-  _RecentSample(this.time, this.load);
+  final double shuntCurrent;
+  _RecentSample(this.time, this.load, this.shuntCurrent);
 }
 
 class TrainingSession {
@@ -140,12 +141,13 @@ class Trainer {
     if (session == null) return;
 
     final load = LoadCalculator.load(s);
-    if (load == null) return;
+    final shuntCurrent = s.shunt?.current;
+    if (load == null || shuntCurrent == null || shuntCurrent.isNaN) return;
 
     if (session.phase == TrainingPhase.baseline) {
       session.baselineSamples.add(load);
     } else if (session.phase == TrainingPhase.waiting) {
-      _checkForTrigger(session, load);
+      _checkForTrigger(session, load, shuntCurrent);
     } else if (session.phase == TrainingPhase.measuring) {
       final delta = (load - (session.baselineAmps ?? 0))
           .clamp(0.0, double.infinity);
@@ -154,39 +156,41 @@ class Trainer {
     }
   }
 
-  void _checkForTrigger(TrainingSession session, double load) {
+  void _checkForTrigger(TrainingSession session, double load, double shunt) {
     final now = DateTime.now();
-    // Lägg till nytt sample i ring-buffert (max 4)
-    session._waitBuffer.add(_RecentSample(now, load));
+    session._waitBuffer.add(_RecentSample(now, load, shunt));
     if (session._waitBuffer.length > 4) {
       session._waitBuffer.removeAt(0);
     }
+    if (session._waitBuffer.length < 4) return;
 
-    if (session._waitBuffer.length < 4) {
-      // Behöver minst 4 samples för att jämföra "tidigare 2" vs "senare 2"
-      return;
-    }
-
-    // Rullande baseline: medel av de TVÅ ÄLDSTA samplen
-    final olderAvg =
+    // Medel av äldsta 2 vs nyaste 2
+    final olderLoad =
         (session._waitBuffer[0].load + session._waitBuffer[1].load) / 2;
-    // Aktuellt: medel av de TVÅ SENASTE
-    final newerAvg =
+    final newerLoad =
         (session._waitBuffer[2].load + session._waitBuffer[3].load) / 2;
-    final delta = newerAvg - olderAvg;
+    final olderShunt = (session._waitBuffer[0].shuntCurrent +
+            session._waitBuffer[1].shuntCurrent) /
+        2;
+    final newerShunt = (session._waitBuffer[2].shuntCurrent +
+            session._waitBuffer[3].shuntCurrent) /
+        2;
+    final loadDelta = newerLoad - olderLoad;
+    final shuntDelta = newerShunt - olderShunt;
 
-    if (delta >= session.triggerThreshold) {
-      // Trigger! Använd FÖRSTA samplet i "nyare"-fönstret som t=0
-      // (det är där ökningen började).
+    // Trigger om:
+    //   load ökade ≥ tröskeln    (en last har slagits på)
+    //   OCH shunt ökade INTE     (annars är det bara mer sol → batteriet laddas mer)
+    // En verklig last drar shunt nedåt (mindre laddning eller mer urladdning).
+    if (loadDelta >= session.triggerThreshold && shuntDelta <= 0.05) {
       final start = session._waitBuffer[2];
-      session.baselineAmps = olderAvg; // baseline = vad det var FÖRE ökningen
+      session.baselineAmps = olderLoad;
       session.phase = TrainingPhase.measuring;
       session.sampleStartedAt = start.time;
-      // Lägg in de två "nyare" som första mätsamples
       for (var i = 2; i < session._waitBuffer.length; i++) {
         final t = session._waitBuffer[i];
         session.samples
-            .add((t.load - olderAvg).clamp(0.0, double.infinity));
+            .add((t.load - olderLoad).clamp(0.0, double.infinity));
         session.sampleTimes.add(t.time);
       }
       session._waitBuffer.clear();
