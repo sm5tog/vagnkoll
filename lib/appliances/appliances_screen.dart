@@ -11,15 +11,24 @@ import 'classifier.dart';
 import 'load_calculator.dart';
 import 'trainer.dart';
 
+/// Callback typer — använder dynamic för att slippa importera
+/// historik/energy från denna fil (lös koppling).
+typedef PauseResume = void Function();
+
 class AppliancesScreen extends StatefulWidget {
   final ApplianceStore store;
   final VictronScanner scanner;
   final Classifier? classifier;
+  // Pausa-callbacks så vi kan stoppa allt icke-kritiskt under träning.
+  final List<PauseResume> pauseHooks;
+  final List<PauseResume> resumeHooks;
   const AppliancesScreen({
     super.key,
     required this.store,
     required this.scanner,
     this.classifier,
+    this.pauseHooks = const [],
+    this.resumeHooks = const [],
   });
 
   @override
@@ -187,7 +196,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
       builder: (_) => const _TrainDialog(),
     );
     if (result == null || !mounted) return;
-    widget.classifier?.pause();
+    _pauseAll();
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => _TrainingScreen(
         scanner: widget.scanner,
@@ -195,7 +204,21 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         spec: result,
       ),
     ));
+    _resumeAll();
+  }
+
+  void _pauseAll() {
+    widget.classifier?.pause();
+    for (final p in widget.pauseHooks) {
+      try { p(); } catch (_) {}
+    }
+  }
+
+  void _resumeAll() {
     widget.classifier?.resume();
+    for (final r in widget.resumeHooks) {
+      try { r(); } catch (_) {}
+    }
   }
 
   Future<void> _editAppliance(Appliance a) async {
@@ -209,7 +232,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
       return;
     }
     if (action.retrain) {
-      widget.classifier?.pause();
+      _pauseAll();
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => _TrainingScreen(
           scanner: widget.scanner,
@@ -218,7 +241,7 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
           replaceExistingId: a.id,
         ),
       ));
-      widget.classifier?.resume();
+      _resumeAll();
     } else {
       // Bara metadata ändrad
       await widget.store.updateMetadata(a.id!, action.name, action.category);

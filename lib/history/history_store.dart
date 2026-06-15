@@ -33,6 +33,9 @@ class HistoryStore {
   Timer? _sampleTimer;
   Timer? _thinTimer;
   VictronScanner? _scanner;
+  bool _paused = false;
+  void pause() => _paused = true;
+  void resume() => _paused = false;
 
   Future<void> open() async {
     final dir = await getApplicationDocumentsDirectory();
@@ -67,6 +70,7 @@ class HistoryStore {
   }
 
   Future<void> _writeSample() async {
+    if (_paused) return;
     final s = _scanner?.current;
     if (s == null) return;
     if (s.shunt == null && s.solar == null) return;

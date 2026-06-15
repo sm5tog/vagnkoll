@@ -30,6 +30,7 @@ class EnergyCounter {
   StreamSubscription<VictronState>? _sub;
   Timer? _persistTimer;
   SharedPreferences? _prefs;
+  bool _paused = false;
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
@@ -46,7 +47,16 @@ class EnergyCounter {
     );
   }
 
+  void pause() => _paused = true;
+  void resume() {
+    _paused = false;
+    _lastSampleTime = null; // Ny start så vi inte räknar paus-tiden
+    _lastCurrent = null;
+    _lastSolarAmps = null;
+  }
+
   void _onState(VictronState s) {
+    if (_paused) return;
     final shunt = s.shunt;
     final solar = s.solar;
     final voltage = shunt?.batteryVoltage ?? solar?.batteryVoltage;

@@ -238,8 +238,27 @@ class _HomeScreenState extends State<HomeScreen> {
         store: _appliances,
         scanner: _scanner,
         classifier: _classifier,
+        pauseHooks: [
+          _energy.pause,
+          _history.pause,
+          _pauseTelemetryTimer,
+        ],
+        resumeHooks: [
+          _energy.resume,
+          _history.resume,
+          _resumeTelemetryTimer,
+        ],
       ),
     ));
+  }
+
+  void _pauseTelemetryTimer() => _telemetryTimer?.cancel();
+
+  void _resumeTelemetryTimer() {
+    _telemetryTimer?.cancel();
+    _telemetryTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   Widget _waitingView() {
