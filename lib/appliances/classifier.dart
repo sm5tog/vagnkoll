@@ -1,155 +1,223 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../victron/victron_scanner.dart';
 import 'appliance_store.dart';
+import 'load_calculator.dart';
 
 class ClassificationResult {
-  final double totalLoadAmps;        // utjämnad last
+  final double totalLoadAmps;
   final List<Appliance> activeAppliances;
-  final double unexplainedAmps;
   ClassificationResult({
     required this.totalLoadAmps,
     required this.activeAppliances,
-    required this.unexplainedAmps,
   });
 }
 
 class _Reading {
   final DateTime time;
-  final double solarAmps;
-  final double shuntCurrent;
-  final double voltage;
-  _Reading(this.time, this.solarAmps, this.shuntCurrent, this.voltage);
+  final double load;
+  _Reading(this.time, this.load);
 }
 
+/// Event-baserad klassificerare. Bevakar shunt-strömmen, detekterar
+/// plötsliga händelser (apparat slås på / av), spelar in vågformen
+/// och korrelerar mot inlärda signaturer.
 class Classifier {
+  static const String _prefsKey = 'classifier_active_v1';
+
+  // Trigger-tröskel för händelsedetektering
+  static const double _triggerThreshold = 0.1;
+
+  // Hur lång live-inspelning för matchning
+  static const int _liveOnLength = 10;   // 10 sek
+  static const int _liveOffLength = 6;    // 6 sek
+
+  // Korrelations-tröskel för match
+  static const double _matchThreshold = 0.75;
+
+  // Hur länge bibehållna i live-bufferten innan en händelse kan upptäckas
+  static const Duration _bufferWindow = Duration(seconds: 5);
+
   List<Appliance> _appliances = [];
+  final Set<int> _activeIds = {};
   final _result = StreamController<ClassificationResult>.broadcast();
   Stream<ClassificationResult> get stream => _result.stream;
   ClassificationResult? _last;
   ClassificationResult? get last => _last;
 
-  // En matchning måste hålla i sig minst så här länge för att räknas
-  static const _stableDuration = Duration(seconds: 5);
-
-  // Utjämningsfönster — separat för solar och shunt för att eliminera
-  // timing-skillnader mellan BLE-paket
-  static const _smoothWindow = Duration(seconds: 10);
-
-  // Bortom maxavstånd från den faktiska lasten räknas ingen matchning alls.
-  static const _maxMatchDistance = 0.3; // A
-
-  final Map<int, DateTime> _firstSeen = {};
   final List<_Reading> _history = [];
+  bool _isRecording = false;
+  bool _recordingIsOn = true; // true = on-event, false = off-event
+  final List<double> _liveTrace = [];
+  double _recordBaseline = 0;
+  Timer? _recordTimer;
 
+  SharedPreferences? _prefs;
   StreamSubscription<VictronState>? _sub;
+  VictronScanner? _scanner;
+
+  Future<void> init() async {
+    _prefs = await SharedPreferences.getInstance();
+    final stored = _prefs?.getString(_prefsKey);
+    if (stored != null) {
+      try {
+        final list = jsonDecode(stored) as List;
+        _activeIds.addAll(list.map((e) => e as int));
+      } catch (_) {}
+    }
+  }
 
   void setLibrary(List<Appliance> appliances) {
     _appliances = appliances;
+    // Ta bort aktiva som inte längre finns
+    final validIds = appliances.map((a) => a.id ?? -1).toSet();
+    _activeIds.removeWhere((id) => !validIds.contains(id));
+    _persist();
+    _emit();
   }
 
   void attachScanner(VictronScanner scanner) {
+    _scanner = scanner;
     _sub?.cancel();
     _sub = scanner.stream.listen(_onState);
   }
 
   void _onState(VictronState s) {
-    final voltage = s.shunt?.batteryVoltage ?? s.solar?.batteryVoltage;
-    final shuntCurrent = s.shunt?.current;
-    if (voltage == null || voltage.isNaN || voltage <= 0) return;
-    if (shuntCurrent == null || shuntCurrent.isNaN) return;
-    final solarW = s.solar?.pvPower ?? 0.0;
-    final solarAmps = solarW.isNaN ? 0.0 : solarW / voltage;
+    final load = LoadCalculator.load(s);
+    if (load == null) return;
 
     final now = DateTime.now();
-    _history.add(_Reading(now, solarAmps, shuntCurrent, voltage));
-    _history.removeWhere((r) => now.difference(r.time) > _smoothWindow);
+    _history.add(_Reading(now, load));
+    _history.removeWhere((r) => now.difference(r.time) > _bufferWindow);
 
-    if (_history.isEmpty) return;
+    if (!_isRecording) {
+      _checkForEvent();
+    }
 
-    // Utjämna solar och shunt VAR FÖR SIG. Detta är nyckeln: om
-    // solar-paket och shunt-paket kommer i otakt blir den momentana
-    // load-beräkningen instabil. Genom att jämna ut dem separat över
-    // ett gemensamt fönster försvinner timing-mismatch-spikar.
-    final n = _history.length.toDouble();
-    final smoothSolar =
-        _history.map((r) => r.solarAmps).reduce((a, b) => a + b) / n;
-    final smoothShunt =
-        _history.map((r) => r.shuntCurrent).reduce((a, b) => a + b) / n;
-    final smoothedLoad = (smoothSolar - smoothShunt).clamp(0.0, double.infinity);
+    _emit();
+  }
 
-    final candidates = _bestSubset(smoothedLoad);
+  void _checkForEvent() {
+    if (_history.length < 4) return;
+    // Senaste 2 vs tidigare 2
+    final n = _history.length;
+    final older = _history.sublist(n - 4, n - 2);
+    final newer = _history.sublist(n - 2);
+    final olderAvg = older.map((r) => r.load).reduce((a, b) => a + b) / 2;
+    final newerAvg = newer.map((r) => r.load).reduce((a, b) => a + b) / 2;
+    final delta = newerAvg - olderAvg;
 
-    // Stabilitetsfilter — kandidat måste ha matchat i ≥ 5 sek
-    final candidateIds = candidates.map((a) => a.id ?? -1).toSet();
-    _firstSeen.removeWhere((id, _) => !candidateIds.contains(id));
-    final stable = <Appliance>[];
-    for (final a in candidates) {
-      final id = a.id ?? -1;
-      _firstSeen.putIfAbsent(id, () => now);
-      if (now.difference(_firstSeen[id]!) >= _stableDuration) {
-        stable.add(a);
+    if (delta >= _triggerThreshold) {
+      _beginRecording(isOn: true, baseline: olderAvg);
+    } else if (delta <= -_triggerThreshold) {
+      _beginRecording(isOn: false, baseline: olderAvg);
+    }
+  }
+
+  void _beginRecording({required bool isOn, required double baseline}) {
+    _isRecording = true;
+    _recordingIsOn = isOn;
+    _recordBaseline = baseline;
+    _liveTrace.clear();
+    // Lägg in nuvarande senaste 2 samples som start
+    if (_history.length >= 2) {
+      _liveTrace.add(_history[_history.length - 2].load - baseline);
+      _liveTrace.add(_history[_history.length - 1].load - baseline);
+    }
+
+    final targetLen = isOn ? _liveOnLength : _liveOffLength;
+    _recordTimer?.cancel();
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final scanner = _scanner;
+      if (scanner == null) {
+        _recordTimer?.cancel();
+        _isRecording = false;
+        return;
+      }
+      final load = LoadCalculator.load(scanner.current);
+      if (load == null) return;
+      _liveTrace.add(load - _recordBaseline);
+      if (_liveTrace.length >= targetLen) {
+        _recordTimer?.cancel();
+        _finishRecording();
+      }
+    });
+  }
+
+  void _finishRecording() {
+    _isRecording = false;
+
+    // Hitta bästa matchning
+    Appliance? best;
+    double bestScore = -2;
+    for (final a in _appliances) {
+      final stored = _recordingIsOn ? a.onTrace : a.offTrace;
+      if (stored.length < 3 || _liveTrace.length < 3) continue;
+      // Jämför över så många samples som båda har
+      final len = stored.length < _liveTrace.length
+          ? stored.length
+          : _liveTrace.length;
+      final score = _pearson(
+        stored.sublist(0, len),
+        _liveTrace.sublist(0, len),
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        best = a;
       }
     }
 
-    final stableSum = stable.fold<double>(0, (s, a) => s + a.steadyAvg);
-    final unexplained = (smoothedLoad - stableSum).clamp(0.0, double.infinity);
+    if (best != null && bestScore >= _matchThreshold && best.id != null) {
+      if (_recordingIsOn) {
+        _activeIds.add(best.id!);
+      } else {
+        _activeIds.remove(best.id!);
+      }
+      _persist();
+    }
+    _emit();
+  }
 
+  void _persist() {
+    _prefs?.setString(_prefsKey, jsonEncode(_activeIds.toList()));
+  }
+
+  void _emit() {
+    final last = _history.isNotEmpty ? _history.last.load : 0.0;
+    final active = _appliances.where((a) => _activeIds.contains(a.id)).toList();
     final result = ClassificationResult(
-      totalLoadAmps: smoothedLoad,
-      activeAppliances: stable,
-      unexplainedAmps: unexplained,
+      totalLoadAmps: last,
+      activeAppliances: active,
     );
     _last = result;
     _result.add(result);
   }
 
-  /// Provar alla delmängder av apparater och returnerar den vars summa
-  /// är närmast den faktiska lasten — inom [_maxMatchDistance].
-  List<Appliance> _bestSubset(double load) {
-    final n = _appliances.length;
-    if (n == 0) return const [];
-    if (n > 12) {
-      return _greedyFallback(load);
+  /// Pearson-korrelation: värde mellan -1 och 1, där 1 = perfekt match.
+  static double _pearson(List<double> x, List<double> y) {
+    if (x.length != y.length || x.isEmpty) return 0;
+    final n = x.length;
+    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+    for (var i = 0; i < n; i++) {
+      sumX += x[i];
+      sumY += y[i];
+      sumXY += x[i] * y[i];
+      sumX2 += x[i] * x[i];
+      sumY2 += y[i] * y[i];
     }
-    final total = 1 << n;
-    List<Appliance>? best;
-    double bestDist = double.infinity;
-    for (var mask = 0; mask < total; mask++) {
-      double sum = 0;
-      final subset = <Appliance>[];
-      for (var i = 0; i < n; i++) {
-        if ((mask >> i) & 1 == 1) {
-          sum += _appliances[i].steadyAvg;
-          subset.add(_appliances[i]);
-        }
-      }
-      final dist = (sum - load).abs();
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = subset;
-      }
-    }
-    if (bestDist > _maxMatchDistance) return const [];
-    return best ?? const [];
-  }
-
-  List<Appliance> _greedyFallback(double load) {
-    final sorted = [..._appliances]
-      ..sort((a, b) => b.steadyAvg.compareTo(a.steadyAvg));
-    final active = <Appliance>[];
-    var remaining = load;
-    for (final a in sorted) {
-      if (remaining >= a.steadyAvg - 0.15) {
-        active.add(a);
-        remaining -= a.steadyAvg;
-      }
-    }
-    return active;
+    final num_ = n * sumXY - sumX * sumY;
+    final den2 = (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY);
+    if (den2 <= 0) return 0;
+    return num_ / sqrt(den2);
   }
 
   void dispose() {
     _sub?.cancel();
+    _recordTimer?.cancel();
     _result.close();
   }
 }

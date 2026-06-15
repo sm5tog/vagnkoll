@@ -100,6 +100,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _energy.init();
     _energy.attachScanner(_scanner);
     await _appliances.open();
+    await _classifier.init();
     _classifier.setLibrary(await _appliances.all());
     _classifier.attachScanner(_scanner);
     _alarms.attach(scanner: _scanner, classifier: _classifier);

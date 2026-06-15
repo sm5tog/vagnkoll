@@ -10,32 +10,38 @@ enum ApplianceCategory {
   warn,     // bör inte vara på (golvvärme, kylskåp på 230V)
 }
 
+/// En "signatur" består av två vågformer som beskriver apparaten:
+///   onTrace  — formen på påslagshändelsen (15 mätpunkter, en per sekund)
+///   offTrace — formen på avstängningshändelsen (8 mätpunkter)
+///
+/// Vågformerna är delta från baseline (subtraherat), så de visar
+/// förändringen apparaten orsakar, inte den absoluta lasten.
 class Appliance {
   final int? id;
   final String name;
   final ApplianceCategory category;
-  final double avgAmps;       // medel över hela mätningen (inkl inrush)
-  final double minAmps;
-  final double maxAmps;
-  final double stdAmps;
-  final double inrushPeak;    // max-värde under första 2 sekunderna
-  final double steadyAvg;     // medel från sekund 2 och framåt
-  final double steadyStd;     // std från sekund 2 och framåt
-  final int sampleCount;
+  final List<double> onTrace;   // delta från baseline (15 samples)
+  final List<double> offTrace;  // delta från baseline (8 samples, negativa värden)
+  final int cycleCount;          // antal träningscykler som ingår i medel
   final DateTime createdAt;
+
+  // Legacy summary stats (för bakåtkompatibilitet / quick checks)
+  double get steadyAvg {
+    if (onTrace.length < 5) return 0;
+    final tail = onTrace.sublist(5);
+    return tail.reduce((a, b) => a + b) / tail.length;
+  }
+
+  double get inrushPeak =>
+      onTrace.isEmpty ? 0 : onTrace.reduce((a, b) => a > b ? a : b);
 
   Appliance({
     this.id,
     required this.name,
     required this.category,
-    required this.avgAmps,
-    required this.minAmps,
-    required this.maxAmps,
-    required this.stdAmps,
-    required this.inrushPeak,
-    required this.steadyAvg,
-    required this.steadyStd,
-    required this.sampleCount,
+    required this.onTrace,
+    required this.offTrace,
+    required this.cycleCount,
     required this.createdAt,
   });
 
@@ -43,21 +49,22 @@ class Appliance {
         'id': id,
         'name': name,
         'category': category.name,
-        'avg_amps': avgAmps,
-        'min_amps': minAmps,
-        'max_amps': maxAmps,
-        'std_amps': stdAmps,
-        'inrush_peak': inrushPeak,
-        'steady_avg': steadyAvg,
-        'steady_std': steadyStd,
-        'sample_count': sampleCount,
+        'on_trace': jsonEncode(onTrace),
+        'off_trace': jsonEncode(offTrace),
+        'cycle_count': cycleCount,
         'created_at': createdAt.millisecondsSinceEpoch ~/ 1000,
       };
 
   static Appliance fromMap(Map<String, dynamic> m) {
-    final avg = (m['avg_amps'] as num).toDouble();
-    final mx = (m['max_amps'] as num).toDouble();
-    final std = (m['std_amps'] as num).toDouble();
+    List<double> parseTrace(String? s) {
+      if (s == null || s.isEmpty) return [];
+      try {
+        return (jsonDecode(s) as List).map((e) => (e as num).toDouble()).toList();
+      } catch (_) {
+        return [];
+      }
+    }
+
     return Appliance(
       id: m['id'] as int?,
       name: m['name'] as String,
@@ -65,30 +72,20 @@ class Appliance {
         (c) => c.name == m['category'],
         orElse: () => ApplianceCategory.load,
       ),
-      avgAmps: avg,
-      minAmps: (m['min_amps'] as num).toDouble(),
-      maxAmps: mx,
-      stdAmps: std,
-      inrushPeak: (m['inrush_peak'] as num?)?.toDouble() ?? mx,
-      steadyAvg: (m['steady_avg'] as num?)?.toDouble() ?? avg,
-      steadyStd: (m['steady_std'] as num?)?.toDouble() ?? std,
-      sampleCount: m['sample_count'] as int,
-      createdAt:
-          DateTime.fromMillisecondsSinceEpoch((m['created_at'] as int) * 1000),
+      onTrace: parseTrace(m['on_trace'] as String?),
+      offTrace: parseTrace(m['off_trace'] as String?),
+      cycleCount: m['cycle_count'] as int? ?? 1,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+          (m['created_at'] as int) * 1000),
     );
   }
 
   Map<String, dynamic> toJson() => {
         'name': name,
         'category': category.name,
-        'avg_amps': avgAmps,
-        'min_amps': minAmps,
-        'max_amps': maxAmps,
-        'std_amps': stdAmps,
-        'inrush_peak': inrushPeak,
-        'steady_avg': steadyAvg,
-        'steady_std': steadyStd,
-        'sample_count': sampleCount,
+        'on_trace': onTrace,
+        'off_trace': offTrace,
+        'cycle_count': cycleCount,
         'created_at': createdAt.toIso8601String(),
       };
 }
@@ -103,34 +100,35 @@ class ApplianceStore {
     final path = p.join(dir.path, 'appliances.db');
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, v) async {
         await db.execute('''
           CREATE TABLE appliances (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             category TEXT NOT NULL,
-            avg_amps REAL NOT NULL,
-            min_amps REAL NOT NULL,
-            max_amps REAL NOT NULL,
-            std_amps REAL NOT NULL,
-            inrush_peak REAL NOT NULL DEFAULT 0,
-            steady_avg REAL NOT NULL DEFAULT 0,
-            steady_std REAL NOT NULL DEFAULT 0,
-            sample_count INTEGER NOT NULL,
+            on_trace TEXT NOT NULL DEFAULT '[]',
+            off_trace TEXT NOT NULL DEFAULT '[]',
+            cycle_count INTEGER NOT NULL DEFAULT 1,
             created_at INTEGER NOT NULL
           )
         ''');
       },
       onUpgrade: (db, oldV, newV) async {
-        if (oldV < 2) {
-          // Lägg till nya kolumner och kopiera värden från befintliga
-          await db.execute('ALTER TABLE appliances ADD COLUMN inrush_peak REAL NOT NULL DEFAULT 0');
-          await db.execute('ALTER TABLE appliances ADD COLUMN steady_avg REAL NOT NULL DEFAULT 0');
-          await db.execute('ALTER TABLE appliances ADD COLUMN steady_std REAL NOT NULL DEFAULT 0');
-          await db.rawUpdate(
-            'UPDATE appliances SET inrush_peak = max_amps, steady_avg = avg_amps, steady_std = std_amps',
-          );
+        if (oldV < 3) {
+          // Rensa gamla tabellen — kan inte konvertera summary stats till vågform
+          await db.execute('DROP TABLE IF EXISTS appliances');
+          await db.execute('''
+            CREATE TABLE appliances (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL UNIQUE,
+              category TEXT NOT NULL,
+              on_trace TEXT NOT NULL DEFAULT '[]',
+              off_trace TEXT NOT NULL DEFAULT '[]',
+              cycle_count INTEGER NOT NULL DEFAULT 1,
+              created_at INTEGER NOT NULL
+            )
+          ''');
         }
       },
     );
@@ -139,7 +137,7 @@ class ApplianceStore {
   Future<List<Appliance>> all() async {
     final db = _db;
     if (db == null) return [];
-    final rows = await db.query('appliances', orderBy: 'avg_amps ASC');
+    final rows = await db.query('appliances', orderBy: 'name ASC');
     return rows.map(Appliance.fromMap).toList();
   }
 
@@ -155,7 +153,6 @@ class ApplianceStore {
     return id;
   }
 
-  /// Uppdaterar bara namn/kategori utan att röra signaturen.
   Future<void> updateMetadata(int id, String name, ApplianceCategory category) async {
     final db = _db;
     if (db == null) return;
@@ -184,23 +181,17 @@ class ApplianceStore {
     var n = 0;
     for (final m in list) {
       final mm = m as Map<String, dynamic>;
-      final avg = (mm['avg_amps'] as num).toDouble();
-      final mx = (mm['max_amps'] as num).toDouble();
-      final std = (mm['std_amps'] as num).toDouble();
+      final onT = (mm['on_trace'] as List?)?.map((e) => (e as num).toDouble()).toList() ?? <double>[];
+      final offT = (mm['off_trace'] as List?)?.map((e) => (e as num).toDouble()).toList() ?? <double>[];
       await insert(Appliance(
         name: mm['name'] as String,
         category: ApplianceCategory.values.firstWhere(
           (c) => c.name == mm['category'],
           orElse: () => ApplianceCategory.load,
         ),
-        avgAmps: avg,
-        minAmps: (mm['min_amps'] as num).toDouble(),
-        maxAmps: mx,
-        stdAmps: std,
-        inrushPeak: (mm['inrush_peak'] as num?)?.toDouble() ?? mx,
-        steadyAvg: (mm['steady_avg'] as num?)?.toDouble() ?? avg,
-        steadyStd: (mm['steady_std'] as num?)?.toDouble() ?? std,
-        sampleCount: mm['sample_count'] as int,
+        onTrace: onT,
+        offTrace: offT,
+        cycleCount: mm['cycle_count'] as int? ?? 1,
         createdAt: DateTime.tryParse(mm['created_at'] as String) ?? DateTime.now(),
       ));
       n++;

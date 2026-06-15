@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math';
 
 import '../victron/victron_scanner.dart';
 import 'appliance_store.dart';
@@ -7,260 +6,302 @@ import 'load_calculator.dart';
 
 enum TrainingPhase {
   idle,
-  baseline,     // 3 sek mätning av basström (apparaten av)
-  waiting,      // väntar på att apparaten ska slås på (auto-detekt)
-  measuring,    // mäter under [duration] sekunder från detekterad start
+  baseline,         // Mäter basström, apparat AV
+  waitingOn,        // Väntar på att apparat slås PÅ
+  recordingOn,      // Spelar in PÅ-händelsen
+  waitingForOff,   // Väntar på att apparat slås AV
+  recordingOff,     // Spelar in AV-händelsen
   done,
-  timeout,      // användaren slog aldrig på apparaten
+  timeout,
 }
 
-class _RecentSample {
+class _Sample {
   final DateTime time;
   final double load;
-  final double shuntCurrent;
-  _RecentSample(this.time, this.load, this.shuntCurrent);
+  _Sample(this.time, this.load);
 }
 
 class TrainingSession {
   final String name;
   final ApplianceCategory category;
-  final Duration duration;
-  final Duration inrushWindow;
-  final Duration baselineDuration;
-  final Duration waitTimeout;
+  final int totalCycles;
+  static const int onLength = 15;   // 15 sek inspelning vid PÅ
+  static const int offLength = 8;    // 8 sek inspelning vid AV
+  static const double triggerThreshold = 0.1; // A delta för att räknas som händelse
 
-  // Trigger när delta ≥ threshold under [confirmSamples] efter varandra
-  final double triggerThreshold;
+  // Per cykel sparas dessa vågformer (delta från baseline)
+  final List<List<double>> onTraces = [];
+  final List<List<double>> offTraces = [];
 
-  final List<double> samples = [];
-  final List<DateTime> sampleTimes = [];
-  final List<double> baselineSamples = [];
-  final List<_RecentSample> _waitBuffer = [];
-
-  double? baselineAmps;
-  DateTime? baselineStartedAt;
-  DateTime? waitingStartedAt;
-  DateTime? sampleStartedAt;
+  int currentCycle = 0;             // 0..totalCycles-1
   TrainingPhase phase = TrainingPhase.idle;
+  DateTime? phaseStartedAt;
+
+  // Rullande buffer för trigger-detektering
+  final List<_Sample> _waitBuffer = [];
+
+  // Pågående inspelning
+  final List<double> currentRecording = [];
+  DateTime? _recordingStartedAt;
+  double _recordingBaseline = 0;
+
+  // Baseline (mätt i [baseline]-fasen, uppdaterat löpande)
+  double? offStateBaseline;    // load när apparat är AV (cyklens startbaseline)
+  double? onStateBaseline;     // load när apparat är PÅ (för off-trigger)
 
   TrainingSession({
     required this.name,
     required this.category,
-    this.duration = const Duration(seconds: 20),
-    this.inrushWindow = const Duration(seconds: 2),
-    this.baselineDuration = const Duration(seconds: 3),
-    this.waitTimeout = const Duration(seconds: 60),
-    this.triggerThreshold = 0.1,
+    this.totalCycles = 3,
   });
 
-  int get baselineSecondsLeft {
-    if (baselineStartedAt == null) return baselineDuration.inSeconds;
-    final left = baselineDuration - DateTime.now().difference(baselineStartedAt!);
-    return left.inMilliseconds <= 0 ? 0 : (left.inMilliseconds / 1000).ceil();
-  }
+  bool get isFirstCycle => currentCycle == 0;
+  bool get isLastCycle => currentCycle == totalCycles - 1;
 
-  bool get isBaselineComplete =>
-      baselineStartedAt != null &&
-      DateTime.now().difference(baselineStartedAt!) >= baselineDuration;
-
-  bool get isWaitTimedOut =>
-      waitingStartedAt != null &&
-      DateTime.now().difference(waitingStartedAt!) >= waitTimeout;
-
-  bool get isMeasurementComplete =>
-      sampleStartedAt != null &&
-      DateTime.now().difference(sampleStartedAt!) >= duration;
-
-  double get measurementProgress {
-    if (sampleStartedAt == null) return 0;
-    final elapsed = DateTime.now().difference(sampleStartedAt!).inMilliseconds;
-    return (elapsed / duration.inMilliseconds).clamp(0.0, 1.0);
-  }
+  Duration get phaseAge => phaseStartedAt == null
+      ? Duration.zero
+      : DateTime.now().difference(phaseStartedAt!);
 }
 
 class Trainer {
   TrainingSession? _session;
   StreamSubscription<VictronState>? _sub;
   Timer? _tick;
+  Timer? _captureTimer;
+
+  static const Duration baselineDuration = Duration(seconds: 3);
+  static const Duration waitTimeout = Duration(seconds: 60);
+  static const Duration interBetweenCycles = Duration(seconds: 2);
 
   final _events = StreamController<TrainingSession>.broadcast();
   Stream<TrainingSession> get events => _events.stream;
 
   TrainingSession? get session => _session;
+  VictronScanner? _scanner;
 
-  /// Startar mätningen. Tre faser:
-  /// 1. baseline (3s) — mäter basström, apparaten ska vara av
-  /// 2. waiting — väntar på att apparaten ska slås på (auto-detekt)
-  /// 3. measuring (20s) — börjar i samma stund som ökningen upptäcks
   void start({
     required VictronScanner scanner,
     required String name,
     required ApplianceCategory category,
-    Duration duration = const Duration(seconds: 20),
+    int cycles = 3,
   }) {
     stop();
+    _scanner = scanner;
     _session = TrainingSession(
       name: name,
       category: category,
-      duration: duration,
+      totalCycles: cycles,
     );
-
-    final s = scanner.current;
-    _session!.baselineAmps = LoadCalculator.load(s) ?? 0.0;
-    _session!.baselineStartedAt = DateTime.now();
-    _session!.phase = TrainingPhase.baseline;
-
+    _enterPhase(TrainingPhase.baseline);
     _sub = scanner.stream.listen(_onState);
-    _tick = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      final session = _session;
-      if (session == null) return;
+    _tick = Timer.periodic(const Duration(milliseconds: 200), (_) => _tickFn());
+  }
 
-      if (session.phase == TrainingPhase.baseline && session.isBaselineComplete) {
-        // Lås baseline (medel av samlade samples) och börja vänta
-        if (session.baselineSamples.isNotEmpty) {
-          session.baselineAmps =
-              session.baselineSamples.reduce((a, b) => a + b) /
-                  session.baselineSamples.length;
+  void _enterPhase(TrainingPhase phase) {
+    final s = _session;
+    if (s == null) return;
+    s.phase = phase;
+    s.phaseStartedAt = DateTime.now();
+    s._waitBuffer.clear();
+    _captureTimer?.cancel();
+    _captureTimer = null;
+    _events.add(s);
+  }
+
+  void _tickFn() {
+    final s = _session;
+    if (s == null) return;
+
+    switch (s.phase) {
+      case TrainingPhase.baseline:
+        if (s.phaseAge >= baselineDuration) {
+          // Beräkna offStateBaseline från senaste samplen
+          if (s._waitBuffer.isNotEmpty) {
+            s.offStateBaseline = s._waitBuffer
+                    .map((e) => e.load)
+                    .reduce((a, b) => a + b) /
+                s._waitBuffer.length;
+          } else {
+            s.offStateBaseline = 0;
+          }
+          _enterPhase(TrainingPhase.waitingOn);
         }
-        session.phase = TrainingPhase.waiting;
-        session.waitingStartedAt = DateTime.now();
-      } else if (session.phase == TrainingPhase.waiting && session.isWaitTimedOut) {
-        session.phase = TrainingPhase.timeout;
-        _tick?.cancel();
-      } else if (session.phase == TrainingPhase.measuring &&
-          session.isMeasurementComplete) {
-        session.phase = TrainingPhase.done;
-        _tick?.cancel();
+        break;
+
+      case TrainingPhase.waitingOn:
+      case TrainingPhase.waitingForOff:
+        if (s.phaseAge >= waitTimeout) {
+          s.phase = TrainingPhase.timeout;
+          _tick?.cancel();
+          _events.add(s);
+        }
+        break;
+
+      case TrainingPhase.recordingOn:
+        // Hanteras av _captureTimer
+        break;
+      case TrainingPhase.recordingOff:
+        // Hanteras av _captureTimer
+        break;
+      case TrainingPhase.idle:
+      case TrainingPhase.done:
+      case TrainingPhase.timeout:
+        break;
+    }
+
+    _events.add(s);
+  }
+
+  void _onState(VictronState st) {
+    final s = _session;
+    if (s == null) return;
+
+    final load = LoadCalculator.load(st);
+    if (load == null) return;
+
+    final now = DateTime.now();
+    s._waitBuffer.add(_Sample(now, load));
+    // Håll bufferten på max 5 sekunder
+    s._waitBuffer.removeWhere((e) => now.difference(e.time).inSeconds > 5);
+
+    switch (s.phase) {
+      case TrainingPhase.baseline:
+        // Inget mer — _tickFn beräknar offStateBaseline när tid är slut
+        break;
+      case TrainingPhase.waitingOn:
+        _checkOnTrigger(s, load);
+        break;
+      case TrainingPhase.waitingForOff:
+        _checkOffTrigger(s, load);
+        break;
+      case TrainingPhase.recordingOn:
+      case TrainingPhase.recordingOff:
+        // Capture-timern sköter sampling
+        break;
+      default:
+        break;
+    }
+  }
+
+  void _checkOnTrigger(TrainingSession s, double load) {
+    final baseline = s.offStateBaseline ?? 0;
+    if (s._waitBuffer.length < 3) return;
+    // Använd medel av tidigare 2 vs senaste — robust mot enstaka spikar
+    final recent = s._waitBuffer.length >= 4
+        ? s._waitBuffer.sublist(s._waitBuffer.length - 2)
+        : s._waitBuffer.sublist(s._waitBuffer.length - 1);
+    final recentAvg = recent.map((e) => e.load).reduce((a, b) => a + b) / recent.length;
+    final delta = recentAvg - baseline;
+    if (delta >= TrainingSession.triggerThreshold) {
+      _startRecording(s, isOn: true);
+    }
+  }
+
+  void _checkOffTrigger(TrainingSession s, double load) {
+    final baseline = s.onStateBaseline ?? 0;
+    if (s._waitBuffer.length < 3) return;
+    final recent = s._waitBuffer.length >= 4
+        ? s._waitBuffer.sublist(s._waitBuffer.length - 2)
+        : s._waitBuffer.sublist(s._waitBuffer.length - 1);
+    final recentAvg = recent.map((e) => e.load).reduce((a, b) => a + b) / recent.length;
+    final delta = baseline - recentAvg;
+    if (delta >= TrainingSession.triggerThreshold) {
+      _startRecording(s, isOn: false);
+    }
+  }
+
+  void _startRecording(TrainingSession s, {required bool isOn}) {
+    if (isOn) {
+      _enterPhase(TrainingPhase.recordingOn);
+      s.currentRecording.clear();
+      s._recordingStartedAt = DateTime.now();
+      s._recordingBaseline = s.offStateBaseline ?? 0;
+    } else {
+      _enterPhase(TrainingPhase.recordingOff);
+      s.currentRecording.clear();
+      s._recordingStartedAt = DateTime.now();
+      s._recordingBaseline = s.onStateBaseline ?? 0;
+    }
+
+    final targetLen = isOn ? TrainingSession.onLength : TrainingSession.offLength;
+    _captureTimer?.cancel();
+    _captureTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final scanner = _scanner;
+      if (scanner == null) return;
+      final load = LoadCalculator.load(scanner.current);
+      if (load == null) return;
+      // Delta från recording-baseline
+      s.currentRecording.add(load - s._recordingBaseline);
+      if (s.currentRecording.length >= targetLen) {
+        _captureTimer?.cancel();
+        _finishRecording(s, isOn: isOn);
       }
-      _events.add(session);
     });
   }
 
-  void _onState(VictronState s) {
-    final session = _session;
-    if (session == null) return;
-
-    final load = LoadCalculator.load(s);
-    final shuntCurrent = s.shunt?.current;
-    if (load == null || shuntCurrent == null || shuntCurrent.isNaN) return;
-
-    if (session.phase == TrainingPhase.baseline) {
-      session.baselineSamples.add(load);
-    } else if (session.phase == TrainingPhase.waiting) {
-      _checkForTrigger(session, load, shuntCurrent);
-    } else if (session.phase == TrainingPhase.measuring) {
-      final delta = (load - (session.baselineAmps ?? 0))
-          .clamp(0.0, double.infinity);
-      session.samples.add(delta);
-      session.sampleTimes.add(DateTime.now());
-    }
-  }
-
-  void _checkForTrigger(TrainingSession session, double load, double shunt) {
-    final now = DateTime.now();
-    session._waitBuffer.add(_RecentSample(now, load, shunt));
-    if (session._waitBuffer.length > 4) {
-      session._waitBuffer.removeAt(0);
-    }
-    if (session._waitBuffer.length < 4) return;
-
-    // Medel av äldsta 2 vs nyaste 2
-    final olderLoad =
-        (session._waitBuffer[0].load + session._waitBuffer[1].load) / 2;
-    final newerLoad =
-        (session._waitBuffer[2].load + session._waitBuffer[3].load) / 2;
-    final olderShunt = (session._waitBuffer[0].shuntCurrent +
-            session._waitBuffer[1].shuntCurrent) /
-        2;
-    final newerShunt = (session._waitBuffer[2].shuntCurrent +
-            session._waitBuffer[3].shuntCurrent) /
-        2;
-    final loadDelta = newerLoad - olderLoad;
-    final shuntDelta = newerShunt - olderShunt;
-
-    // Trigger om:
-    //   load ökade ≥ tröskeln    (en last har slagits på)
-    //   OCH shunt ökade INTE     (annars är det bara mer sol → batteriet laddas mer)
-    // En verklig last drar shunt nedåt (mindre laddning eller mer urladdning).
-    if (loadDelta >= session.triggerThreshold && shuntDelta <= 0.05) {
-      final start = session._waitBuffer[2];
-      session.baselineAmps = olderLoad;
-      session.phase = TrainingPhase.measuring;
-      session.sampleStartedAt = start.time;
-      for (var i = 2; i < session._waitBuffer.length; i++) {
-        final t = session._waitBuffer[i];
-        session.samples
-            .add((t.load - olderLoad).clamp(0.0, double.infinity));
-        session.sampleTimes.add(t.time);
+  void _finishRecording(TrainingSession s, {required bool isOn}) {
+    if (isOn) {
+      s.onTraces.add(List<double>.from(s.currentRecording));
+      // Beräkna onStateBaseline = nuvarande load (apparaten är nu PÅ)
+      if (s._waitBuffer.isNotEmpty) {
+        final n = s._waitBuffer.length >= 3 ? 3 : s._waitBuffer.length;
+        final tail = s._waitBuffer.sublist(s._waitBuffer.length - n);
+        s.onStateBaseline =
+            tail.map((e) => e.load).reduce((a, b) => a + b) / tail.length;
       }
-      session._waitBuffer.clear();
-    }
-  }
-
-  /// Beräkna signatur och returnera ny Appliance. Returnerar null om
-  /// för få mätningar.
-  Appliance? finalize() {
-    final session = _session;
-    if (session == null || session.sampleStartedAt == null) return null;
-    final samples = session.samples;
-    final times = session.sampleTimes;
-    if (samples.length < 5) return null;
-
-    final avg = samples.reduce((a, b) => a + b) / samples.length;
-    final mn = samples.reduce(min);
-    final mx = samples.reduce(max);
-    final variance = samples
-            .map((v) => (v - avg) * (v - avg))
-            .reduce((a, b) => a + b) /
-        samples.length;
-    final std = sqrt(variance);
-
-    // Dela upp i inrush-fönster och steady-state
-    final inrushEnd = session.sampleStartedAt!.add(session.inrushWindow);
-    final steady = <double>[];
-    double inrushPeak = 0;
-    for (var i = 0; i < samples.length; i++) {
-      if (times[i].isBefore(inrushEnd)) {
-        if (samples[i] > inrushPeak) inrushPeak = samples[i];
-      } else {
-        steady.add(samples[i]);
-      }
-    }
-
-    // Steady-state stats (fallback till hela mätningen om för få samples)
-    double steadyAvg;
-    double steadyStd;
-    if (steady.length >= 3) {
-      steadyAvg = steady.reduce((a, b) => a + b) / steady.length;
-      final svar = steady
-              .map((v) => (v - steadyAvg) * (v - steadyAvg))
-              .reduce((a, b) => a + b) /
-          steady.length;
-      steadyStd = sqrt(svar);
+      _enterPhase(TrainingPhase.waitingForOff);
     } else {
-      steadyAvg = avg;
-      steadyStd = std;
+      s.offTraces.add(List<double>.from(s.currentRecording));
+      s.currentCycle++;
+      if (s.currentCycle >= s.totalCycles) {
+        s.phase = TrainingPhase.done;
+        _tick?.cancel();
+        _events.add(s);
+      } else {
+        // Nästa cykel — apparat ska vara AV nu (vi nyss spelade in OFF)
+        _enterPhase(TrainingPhase.waitingOn);
+      }
     }
-    if (inrushPeak == 0) inrushPeak = mx;
+  }
+
+  /// Slå ihop alla cyklers vågformer till en medel-vågform per riktning.
+  Appliance? finalize() {
+    final s = _session;
+    if (s == null) return null;
+    if (s.onTraces.isEmpty || s.offTraces.isEmpty) return null;
+
+    final onAvg = _averageTraces(s.onTraces, TrainingSession.onLength);
+    final offAvg = _averageTraces(s.offTraces, TrainingSession.offLength);
 
     return Appliance(
-      name: session.name,
-      category: session.category,
-      avgAmps: avg,
-      minAmps: mn,
-      maxAmps: mx,
-      stdAmps: std,
-      inrushPeak: inrushPeak,
-      steadyAvg: steadyAvg,
-      steadyStd: steadyStd,
-      sampleCount: samples.length,
+      name: s.name,
+      category: s.category,
+      onTrace: onAvg,
+      offTrace: offAvg,
+      cycleCount: s.totalCycles,
       createdAt: DateTime.now(),
     );
+  }
+
+  static List<double> _averageTraces(List<List<double>> traces, int length) {
+    final result = List<double>.filled(length, 0.0);
+    final counts = List<int>.filled(length, 0);
+    for (final t in traces) {
+      for (var i = 0; i < t.length && i < length; i++) {
+        result[i] += t[i];
+        counts[i]++;
+      }
+    }
+    for (var i = 0; i < length; i++) {
+      if (counts[i] > 0) result[i] /= counts[i];
+    }
+    return result;
   }
 
   void stop() {
     _sub?.cancel();
     _tick?.cancel();
+    _captureTimer?.cancel();
     _session = null;
   }
 

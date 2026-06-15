@@ -115,9 +115,9 @@ class _AppliancesScreenState extends State<AppliancesScreen> {
         leading: Icon(icon, color: color),
         title: Text(a.name),
         subtitle: Text(
-          'Stadigt: ${a.steadyAvg.toStringAsFixed(2)} A '
-          '(σ=${a.steadyStd.toStringAsFixed(2)})  •  '
-          'Inrush: ${a.inrushPeak.toStringAsFixed(2)} A',
+          'Stadigt ${a.steadyAvg.toStringAsFixed(2)} A • '
+          'Inrush ${a.inrushPeak.toStringAsFixed(2)} A • '
+          '${a.cycleCount} cykler',
           style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
         ),
         trailing: const Icon(Icons.edit, size: 18, color: Color(0xFF6B7280)),
@@ -503,7 +503,7 @@ class _TrainingScreenState extends State<_TrainingScreen> {
             const SizedBox(height: 24),
             if (!_started) ...[
               const Text(
-                'Tryck START. Vi mäter först basström i 3 sekunder, sen kan du slå PÅ apparaten när du är redo — appen detekterar automatiskt när den startar och börjar mäta.',
+                'Vi mäter 3 cykler av PÅ och AV. Tryck START och följ instruktionerna. Du slår PÅ och AV apparaten när det står att du ska. Appen detekterar händelserna automatiskt.',
                 style: TextStyle(color: Color(0xFF9CA3AF)),
               ),
               const SizedBox(height: 24),
@@ -512,42 +512,33 @@ class _TrainingScreenState extends State<_TrainingScreen> {
                 child: const Text('START'),
               ),
             ] else if (session != null) ...[
-              if (session.phase == TrainingPhase.baseline) ...[
-                const Text('Mäter basström…\nLämna apparaten AVSLAGEN.',
+              if (session.totalCycles > 1)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    'Cykel ${session.currentCycle + 1} av ${session.totalCycles}',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 16)),
-                const SizedBox(height: 16),
-                Text(
-                  '${session.baselineSecondsLeft}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 96,
-                    fontWeight: FontWeight.w200,
-                    color: Color(0xFFFBBF24),
+                    style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
                   ),
                 ),
-              ] else if (session.phase == TrainingPhase.waiting) ...[
-                const Text('SLÅ PÅ NÄR DU ÄR REDO',
+              if (session.phase == TrainingPhase.baseline) ...[
+                const Text('Mäter basström…\nApparaten ska vara AV.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 16)),
+                const SizedBox(height: 24),
+                const Center(child: CircularProgressIndicator()),
+              ] else if (session.phase == TrainingPhase.waitingOn) ...[
+                const Text('🟡 SLÅ PÅ NU',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Color(0xFFFBBF24),
-                      fontSize: 20,
+                      fontSize: 24,
                       fontWeight: FontWeight.bold,
                     )),
-                const SizedBox(height: 12),
-                Text(
-                  'Nuvarande last: ${_liveLoad.toStringAsFixed(2)} A',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
-                ),
                 const SizedBox(height: 24),
                 const Center(child: CircularProgressIndicator()),
-                const SizedBox(height: 12),
-                const Text('Väntar på start…',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Color(0xFF9CA3AF))),
-              ] else if (session.phase == TrainingPhase.measuring) ...[
-                const Text('🔴 MÄTER',
+              ] else if (session.phase == TrainingPhase.recordingOn) ...[
+                const Text('🔴 SPELAR IN PÅ',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Color(0xFFEF4444),
@@ -555,26 +546,51 @@ class _TrainingScreenState extends State<_TrainingScreen> {
                       fontWeight: FontWeight.bold,
                     )),
                 const SizedBox(height: 16),
-                LinearProgressIndicator(value: session.measurementProgress),
-                const SizedBox(height: 16),
+                LinearProgressIndicator(
+                  value: session.currentRecording.length /
+                      TrainingSession.onLength,
+                ),
+                const SizedBox(height: 12),
                 Text(
-                  '${session.samples.length} samples',
+                  '${session.currentRecording.length} / ${TrainingSession.onLength} sek',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Color(0xFF9CA3AF)),
                 ),
-                const SizedBox(height: 8),
-                if (session.samples.isNotEmpty)
-                  Text(
-                    'Senaste: ${session.samples.last.toStringAsFixed(2)} A',
+              ] else if (session.phase == TrainingPhase.waitingForOff) ...[
+                const Text('🟡 SLÅ AV NU',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 16),
-                  ),
+                    style: TextStyle(
+                      color: Color(0xFFFBBF24),
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    )),
+                const SizedBox(height: 24),
+                const Center(child: CircularProgressIndicator()),
+              ] else if (session.phase == TrainingPhase.recordingOff) ...[
+                const Text('🔴 SPELAR IN AV',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Color(0xFFEF4444),
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    )),
+                const SizedBox(height: 16),
+                LinearProgressIndicator(
+                  value: session.currentRecording.length /
+                      TrainingSession.offLength,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '${session.currentRecording.length} / ${TrainingSession.offLength} sek',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Color(0xFF9CA3AF)),
+                ),
               ] else if (session.phase == TrainingPhase.timeout) ...[
                 const Text('⌛ Tidsgräns',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Color(0xFFEF4444), fontSize: 20)),
                 const SizedBox(height: 12),
-                const Text('Apparaten slogs aldrig på. Försök igen.',
+                const Text('Apparaten slogs aldrig på/av. Försök igen.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Color(0xFF9CA3AF))),
                 const SizedBox(height: 16),
