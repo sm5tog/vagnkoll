@@ -284,19 +284,20 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               child: _SmallStat(
                 label: 'Sol',
-                value: solar?.pvPower.toStringAsFixed(0) ?? '—',
-                unit: 'W',
+                value: solarA != null && solar != null
+                    ? '${solarA.toStringAsFixed(1)}A / ${solar.pvPower.toStringAsFixed(0)}W'
+                    : '—',
+                unit: '',
                 color: const Color(0xFFFBBF24),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: _SmallStat(
-                label: 'Idag',
-                value: solar != null
-                    ? (solar.yieldTodayWh / 1000).toStringAsFixed(2)
-                    : '—',
-                unit: 'kWh',
+                label: 'Laddat idag',
+                value: _energy.solarAhToday.toStringAsFixed(1),
+                unit: 'Ah',
+                color: const Color(0xFF4ADE80),
               ),
             ),
           ],
@@ -315,32 +316,10 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: _SmallStat(
-                label: 'Laddning',
-                value: solarA?.toStringAsFixed(2) ?? '—',
-                unit: 'A',
-                color: const Color(0xFF4ADE80),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _SmallStat(
                 label: 'Använt idag',
                 value: _energy.usedAhToday.toStringAsFixed(1),
                 unit: 'Ah',
                 color: const Color(0xFFEF4444),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _SmallStat(
-                label: 'Laddat idag',
-                value: _energy.solarAhToday.toStringAsFixed(1),
-                unit: 'Ah',
-                color: const Color(0xFF4ADE80),
               ),
             ),
           ],

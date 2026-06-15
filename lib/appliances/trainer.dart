@@ -155,27 +155,40 @@ class Trainer {
   }
 
   void _checkForTrigger(TrainingSession session, double load) {
-    final baseline = session.baselineAmps ?? 0;
-    final delta = load - baseline;
     final now = DateTime.now();
+    // Lägg till nytt sample i ring-buffert (max 4)
+    session._waitBuffer.add(_RecentSample(now, load));
+    if (session._waitBuffer.length > 4) {
+      session._waitBuffer.removeAt(0);
+    }
+
+    if (session._waitBuffer.length < 4) {
+      // Behöver minst 4 samples för att jämföra "tidigare 2" vs "senare 2"
+      return;
+    }
+
+    // Rullande baseline: medel av de TVÅ ÄLDSTA samplen
+    final olderAvg =
+        (session._waitBuffer[0].load + session._waitBuffer[1].load) / 2;
+    // Aktuellt: medel av de TVÅ SENASTE
+    final newerAvg =
+        (session._waitBuffer[2].load + session._waitBuffer[3].load) / 2;
+    final delta = newerAvg - olderAvg;
 
     if (delta >= session.triggerThreshold) {
-      session._waitBuffer.add(_RecentSample(now, load));
-      // Behöver 2 över-tröskel-samples i rad (filtrera bort spikar)
-      if (session._waitBuffer.length >= 2) {
-        // Trigger! Använd FÖRSTA över-tröskel-samplet som t=0 så vi
-        // fångar hela inrush-spiken.
-        final start = session._waitBuffer.first;
-        session.phase = TrainingPhase.measuring;
-        session.sampleStartedAt = start.time;
-        for (final t in session._waitBuffer) {
-          session.samples.add((t.load - baseline).clamp(0.0, double.infinity));
-          session.sampleTimes.add(t.time);
-        }
-        session._waitBuffer.clear();
+      // Trigger! Använd FÖRSTA samplet i "nyare"-fönstret som t=0
+      // (det är där ökningen började).
+      final start = session._waitBuffer[2];
+      session.baselineAmps = olderAvg; // baseline = vad det var FÖRE ökningen
+      session.phase = TrainingPhase.measuring;
+      session.sampleStartedAt = start.time;
+      // Lägg in de två "nyare" som första mätsamples
+      for (var i = 2; i < session._waitBuffer.length; i++) {
+        final t = session._waitBuffer[i];
+        session.samples
+            .add((t.load - olderAvg).clamp(0.0, double.infinity));
+        session.sampleTimes.add(t.time);
       }
-    } else {
-      // Återställ om vi tappade tröskelnivån (ostabilt)
       session._waitBuffer.clear();
     }
   }

@@ -536,7 +536,7 @@ class _TrainingScreenState extends State<_TrainingScreen> {
                     )),
                 const SizedBox(height: 12),
                 Text(
-                  'Baseline låst på ${(session.baselineAmps ?? 0).toStringAsFixed(2)} A',
+                  'Nuvarande last: ${_liveLoad.toStringAsFixed(2)} A',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
                 ),
