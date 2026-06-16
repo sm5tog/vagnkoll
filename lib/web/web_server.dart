@@ -196,8 +196,7 @@ class WebServer {
     <div class="box">
       <div class="label">FÖRBRUKNING</div>
       <div class="small-val" style="color:#EF4444">
-        ${loadA != null ? '${fmt(loadA)} A' : '—'}
-        ${loadW != null ? ' / ${fmt(loadW, 0)} W' : ''}
+        ${loadA != null ? '${fmt(loadA, 1)}A' : '—'}${loadW != null ? '/${fmt(loadW, 0)}W' : ''}
       </div>
     </div>
     <div class="box">

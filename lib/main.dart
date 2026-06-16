@@ -335,6 +335,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final loadA = (solarA != null && shunt?.current != null)
         ? (solarA - shunt!.current).clamp(0.0, double.infinity)
         : null;
+    final loadW = (loadA != null && voltage != null) ? loadA * voltage : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -383,8 +384,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             Expanded(
               child: _SmallStat(
                 label: 'Förbrukning',
-                value: loadA?.toStringAsFixed(2) ?? '—',
-                unit: 'A',
+                value: loadA != null
+                    ? '${loadA.toStringAsFixed(1)}A/${loadW?.toStringAsFixed(0) ?? '—'}W'
+                    : '—',
+                unit: '',
                 color: const Color(0xFFEF4444),
               ),
             ),
