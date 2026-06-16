@@ -103,6 +103,26 @@ class WebServer {
     String fmt(double? v, [int dec = 2]) =>
         v == null || v.isNaN ? '—' : v.toStringAsFixed(dec);
 
+    // Beräkna återstående laddtid eller urladdningstid baserat på nuvarande
+    // ström. LiFePO4-laddning är optimistisk vid hög SoC pga absorption-fasen.
+    String? etaText;
+    String etaColor = '#9CA3AF';
+    if (shunt != null && !shunt.soc.isNaN && !shunt.current.isNaN) {
+      final c = shunt.current;
+      final soc = shunt.soc;
+      if (c > 0.5 && soc < 100) {
+        final remainingAh = (100 - soc) / 100 * kBatteryCapacityAh;
+        final hours = remainingAh / c;
+        etaText = 'Full om ${_fmtDuration(hours)}';
+        etaColor = '#4ADE80';
+      } else if (c < -0.5 && soc > 0) {
+        final usableAh = soc / 100 * kBatteryCapacityAh;
+        final hours = usableAh / c.abs();
+        etaText = 'Tom om ${_fmtDuration(hours)}';
+        etaColor = '#FBBF24';
+      }
+    }
+
     final html = '''
 <!DOCTYPE html>
 <html lang="sv">
@@ -128,6 +148,7 @@ class WebServer {
     font-size: 56px; font-weight: 200;
     color: ${_socColorCss(shunt?.soc)};
   }
+  .eta { font-size: 14px; font-weight: 300; margin-top: -6px; clear: both; }
   .right { float: right; text-align: right; font-size: 14px; color: rgba(255,255,255,0.7); }
   .small-row { display: flex; gap: 12px; margin-bottom: 10px; }
   .small-row .box { flex: 1; padding: 10px 12px; margin-bottom: 0; }
@@ -155,6 +176,7 @@ class WebServer {
       ${ahKvar != null ? '<br>${fmt(ahKvar, 1)} Ah kvar' : ''}
     </div>
     <div class="big">${fmt(shunt?.soc, 1)} %</div>
+    ${etaText != null ? '<div class="eta" style="color:$etaColor">$etaText</div>' : ''}
   </div>
 
   <div class="small-row">
@@ -198,6 +220,17 @@ class WebServer {
       html,
       headers: {'Content-Type': 'text/html; charset=utf-8'},
     );
+  }
+
+  static String _fmtDuration(double hours) {
+    if (hours.isNaN || hours.isInfinite || hours <= 0) return '—';
+    if (hours > 99) return '>99 h';
+    final totalMin = (hours * 60).round();
+    final h = totalMin ~/ 60;
+    final m = totalMin % 60;
+    if (h == 0) return '$m min';
+    if (m == 0) return '$h h';
+    return '$h h $m min';
   }
 
   static String _esc(String s) =>
