@@ -33,9 +33,16 @@ class VictronScanner {
   Stream<VictronState> get stream => _stateController.stream;
   VictronState get current => _state;
 
+  // MAC-adresser till våra Victron-enheter. Android 8.1+ levererar inga
+  // scan-resultat när skärmen är låst om vi inte filtrerar på något — så
+  // utan denna lista tystnar appen så fort telefonen låses.
+  static List<String> get _victronMacs =>
+      kVictronDevices.map((d) => d.mac).toList();
+
   Future<void> start() async {
     _scanSub = FlutterBluePlus.scanResults.listen(_onScanResults);
     await FlutterBluePlus.startScan(
+      withRemoteIds: _victronMacs,
       continuousUpdates: true,
       removeIfGone: const Duration(seconds: 30),
     );
@@ -49,6 +56,7 @@ class VictronScanner {
           await FlutterBluePlus.stopScan();
           await Future.delayed(const Duration(milliseconds: 500));
           await FlutterBluePlus.startScan(
+            withRemoteIds: _victronMacs,
             continuousUpdates: true,
             removeIfGone: const Duration(seconds: 30),
           );

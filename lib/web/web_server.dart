@@ -62,6 +62,10 @@ class WebServer {
     return null;
   }
 
+  // Stale-trösklar: visa diskret ålder över "warn", röd banner när "alarm"
+  static const int _staleWarnSec = 15;
+  static const int _staleAlarmSec = 30;
+
   Future<Response> _handleRequest(Request request) async {
     final state = scanner.current;
     final shunt = state.shunt;
@@ -77,6 +81,24 @@ class WebServer {
 
     final activeAppliances = classifier.last?.activeAppliances ?? const <Appliance>[];
     final activeAlarms = alarms.current;
+
+    final now = DateTime.now();
+    final shuntAge = state.shuntUpdated == null
+        ? null
+        : now.difference(state.shuntUpdated!).inSeconds;
+    final solarAge = state.solarUpdated == null
+        ? null
+        : now.difference(state.solarUpdated!).inSeconds;
+    final shuntStale = shuntAge != null && shuntAge >= _staleWarnSec;
+    final solarStale = solarAge != null && solarAge >= _staleWarnSec;
+    final bothAlarm = (shuntAge == null || shuntAge >= _staleAlarmSec) &&
+        (solarAge == null || solarAge >= _staleAlarmSec);
+    final hasEverReceived = state.shuntUpdated != null || state.solarUpdated != null;
+
+    String ageSuffix(int? age) {
+      if (age == null || age < _staleWarnSec) return '';
+      return ' <span style="color:#FBBF24">($age s sen)</span>';
+    }
 
     String fmt(double? v, [int dec = 2]) =>
         v == null || v.isNaN ? '—' : v.toStringAsFixed(dec);
@@ -123,8 +145,11 @@ class WebServer {
 <body>
   <div style="color:#6B7280; letter-spacing:4px; font-size:13px; margin-bottom:12px;">VAGNKOLL</div>
 
+  ${bothAlarm && hasEverReceived ? '<div class="alarm alarm-critical">⚠ Ingen Victron-data på ${shuntAge ?? solarAge ?? 0} s — kontrollera BLE/telefon</div>' : ''}
+  ${!hasEverReceived ? '<div class="alarm alarm-warn">⏳ Väntar på första Victron-paket…</div>' : ''}
+
   <div class="box">
-    <div class="label ${shunt != null ? 'label-ok' : ''}">BATTERI</div>
+    <div class="label ${shunt != null && !shuntStale ? 'label-ok' : ''}">BATTERI${ageSuffix(shuntAge)}</div>
     <div class="right">
       ${shunt != null ? '${fmt(shunt.batteryVoltage)} V<br>${shunt.current >= 0 ? '+' : ''}${fmt(shunt.current)} A' : ''}
       ${ahKvar != null ? '<br>${fmt(ahKvar, 1)} Ah kvar' : ''}
@@ -134,7 +159,7 @@ class WebServer {
 
   <div class="small-row">
     <div class="box">
-      <div class="label ${solar != null ? 'label-ok' : ''}">SOL</div>
+      <div class="label ${solar != null && !solarStale ? 'label-ok' : ''}">SOL${ageSuffix(solarAge)}</div>
       <div class="small-val" style="color:#FBBF24">
         ${solarA != null && solar != null ? '${fmt(solarA, 1)}A/${fmt(solar.pvPower, 0)}W' : '—'}
       </div>
