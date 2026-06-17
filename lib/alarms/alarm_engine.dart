@@ -2,7 +2,7 @@ import 'dart:async';
 
 import '../appliances/appliance_store.dart';
 import '../appliances/classifier.dart';
-import '../secrets.dart';
+import '../config/app_config.dart';
 import '../victron/victron_scanner.dart';
 
 enum AlarmLevel { info, warn, critical, emergency }
@@ -27,6 +27,23 @@ class AlarmEngine {
   final _controller = StreamController<List<Alarm>>.broadcast();
   Stream<List<Alarm>> get stream => _controller.stream;
   List<Alarm> get current => _alarms.values.toList();
+
+  // Larmtrösklar — uppdateras via updateConfig() när användaren sparar setup
+  double _socWarn = 30.0;
+  double _socCritical = 20.0;
+  double _socEmergency = 15.0;
+  double _inverterIdleAmps = 0.5;
+  double _highLoadWattsThreshold = 72.0;
+  int _highLoadMinutes = 10;
+
+  void updateConfig(AppConfig cfg) {
+    _socWarn = cfg.socWarn;
+    _socCritical = cfg.socCritical;
+    _socEmergency = cfg.socEmergency;
+    _inverterIdleAmps = cfg.inverterIdleAmps;
+    _highLoadWattsThreshold = cfg.highLoadWattsThreshold;
+    _highLoadMinutes = cfg.highLoadMinutes;
+  }
 
   // Tid en orsak måste hålla i sig innan vi larmar
   static const _inverterIdleDelay = Duration(minutes: 5);
@@ -65,10 +82,10 @@ class AlarmEngine {
     if (voltage == null || voltage <= 0) return;
     final loadA = (s.solar?.pvPower ?? 0.0) / voltage - (s.shunt?.current ?? 0.0);
     final loadW = loadA * voltage;
-    if (loadW >= kHighLoadWattsThreshold) {
+    if (loadW >= _highLoadWattsThreshold) {
       _highLoadFirstSeen ??= DateTime.now();
       final elapsed = DateTime.now().difference(_highLoadFirstSeen!);
-      if (elapsed.inMinutes >= kHighLoadMinutes) {
+      if (elapsed.inMinutes >= _highLoadMinutes) {
         _set(Alarm(
           id: 'high_load',
           message:
@@ -89,21 +106,21 @@ class AlarmEngine {
       _clear('soc');
       return;
     }
-    if (soc < kSocEmergency) {
+    if (soc < _socEmergency) {
       _set(Alarm(
         id: 'soc',
         message: 'Kritiskt: batteri $soc % — STÄNG AV ALLT',
         level: AlarmLevel.emergency,
         since: _alarms['soc']?.since ?? DateTime.now(),
       ));
-    } else if (soc < kSocCritical) {
+    } else if (soc < _socCritical) {
       _set(Alarm(
         id: 'soc',
         message: 'Batterinivå kritiskt låg: ${soc.toStringAsFixed(1)} %',
         level: AlarmLevel.critical,
         since: _alarms['soc']?.since ?? DateTime.now(),
       ));
-    } else if (soc < kSocWarn) {
+    } else if (soc < _socWarn) {
       _set(Alarm(
         id: 'soc',
         message: 'Batterinivå låg: ${soc.toStringAsFixed(1)} %',
@@ -123,8 +140,8 @@ class AlarmEngine {
     // inget annat verkar dra → invertern står på i onödan.
     // (Detta är en grov approximation — kan förfinas när mer data finns.)
     final inverterLikelyOn = current < 0 &&
-        (current.abs() >= kInverterIdleAmps - 0.3) &&
-        (current.abs() <= kInverterIdleAmps + 0.5);
+        (current.abs() >= _inverterIdleAmps - 0.3) &&
+        (current.abs() <= _inverterIdleAmps + 0.5);
 
     if (inverterLikelyOn) {
       _inverterFirstSeen ??= DateTime.now();

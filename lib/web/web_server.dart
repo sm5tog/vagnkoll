@@ -8,8 +8,8 @@ import '../alarms/alarm_engine.dart';
 import '../appliances/appliance_store.dart';
 import '../appliances/classifier.dart';
 import '../appliances/load_calculator.dart';
+import '../config/app_config.dart';
 import '../energy_counter.dart';
-import '../secrets.dart';
 import '../victron/victron_scanner.dart';
 
 class WebServer {
@@ -19,6 +19,10 @@ class WebServer {
   final EnergyCounter energy;
   final Classifier classifier;
   final AlarmEngine alarms;
+
+  double _batteryCapacityAh = 100.0;
+  double _socWarn = 30.0;
+  double _socCritical = 20.0;
 
   HttpServer? _server;
   String? _ipAddress;
@@ -30,6 +34,12 @@ class WebServer {
     required this.classifier,
     required this.alarms,
   });
+
+  void updateConfig(AppConfig cfg) {
+    _batteryCapacityAh = cfg.batteryCapacityAh;
+    _socWarn = cfg.socWarn;
+    _socCritical = cfg.socCritical;
+  }
 
   Future<void> start() async {
     final handler = const Pipeline().addHandler(_handleRequest);
@@ -77,7 +87,7 @@ class WebServer {
         ? solar.pvPower / voltage
         : null;
     final ahKvar =
-        shunt?.soc != null ? kBatteryCapacityAh * shunt!.soc / 100 : null;
+        shunt?.soc != null ? _batteryCapacityAh * shunt!.soc / 100 : null;
 
     final activeAppliances = classifier.last?.activeAppliances ?? const <Appliance>[];
     final activeAlarms = alarms.current;
@@ -111,12 +121,12 @@ class WebServer {
       final c = shunt.current;
       final soc = shunt.soc;
       if (c > 0.5 && soc < 100) {
-        final remainingAh = (100 - soc) / 100 * kBatteryCapacityAh;
+        final remainingAh = (100 - soc) / 100 * _batteryCapacityAh;
         final hours = remainingAh / c;
         etaText = 'Full om ${_fmtDuration(hours)}';
         etaColor = '#4ADE80';
       } else if (c < -0.5 && soc > 0) {
-        final usableAh = soc / 100 * kBatteryCapacityAh;
+        final usableAh = soc / 100 * _batteryCapacityAh;
         final hours = usableAh / c.abs();
         etaText = 'Tom om ${_fmtDuration(hours)}';
         etaColor = '#FBBF24';
@@ -235,10 +245,10 @@ class WebServer {
   static String _esc(String s) =>
       s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
-  static String _socColorCss(double? soc) {
+  String _socColorCss(double? soc) {
     if (soc == null) return '#9CA3AF';
-    if (soc < kSocCritical) return '#EF4444';
-    if (soc < kSocWarn) return '#FBBF24';
+    if (soc < _socCritical) return '#EF4444';
+    if (soc < _socWarn) return '#FBBF24';
     return '#4ADE80';
   }
 

@@ -14,7 +14,6 @@ import 'energy_counter.dart';
 import 'foreground_task.dart';
 import 'history/history_screen.dart';
 import 'history/history_store.dart';
-import 'secrets.dart';
 import 'setup/setup_screen.dart';
 import 'victron/victron_scanner.dart';
 import 'web/web_server.dart';
@@ -73,6 +72,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _classifier = Classifier();
   final _alarms = AlarmEngine();
   WebServer? _webServer;
+  AppConfig _config = AppConfig.defaults();
   StreamSubscription<VictronState>? _sub;
   StreamSubscription<EnergyCounter>? _energySub;
   StreamSubscription<ClassificationResult>? _classSub;
@@ -120,9 +120,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       return;
     }
 
-    // Onboarding: visa setup-skärmen om appen aldrig konfigurerats. Användaren
-    // kan välja "Hoppa över" för att gå förbi (markerar onboarding klar).
-    final cfg = await AppConfig.load();
+    // Ladda konfiguration. Vid första start utan config: visa onboarding.
+    var cfg = await AppConfig.load();
     final onboardingDone = await AppConfig.isOnboardingDone();
     if (!cfg.isConfigured && !onboardingDone && mounted) {
       await Navigator.of(context).push(
@@ -131,7 +130,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           fullscreenDialog: true,
         ),
       );
+      cfg = await AppConfig.load(); // ladda om efter onboarding
     }
+    _config = cfg;
+    await _scanner.updateDevices(_config.devices);
 
     await _history.open();
     _history.attachScanner(_scanner);
@@ -142,6 +144,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _classifier.setLibrary(await _appliances.all());
     _classifier.attachScanner(_scanner);
     _alarms.attach(scanner: _scanner, classifier: _classifier);
+    _alarms.updateConfig(_config);
 
     _sub = _scanner.stream.listen((s) {
       setState(() {
@@ -173,6 +176,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       alarms: _alarms,
     );
     await _webServer!.start();
+    _webServer!.updateConfig(_config);
 
     // Starta foreground service så Android håller appen vid liv
     // även när skärmen är låst
@@ -329,8 +333,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _history.resume,
           _resumeTelemetryTimer,
         ],
+        onConfigSaved: _onConfigSaved,
       ),
     ));
+  }
+
+  void _onConfigSaved() {
+    AppConfig.load().then((cfg) {
+      if (!mounted) return;
+      setState(() => _config = cfg);
+      _scanner.updateDevices(cfg.devices);
+      _alarms.updateConfig(cfg);
+      _webServer?.updateConfig(cfg);
+    });
   }
 
   void _openAppliances() {
@@ -400,7 +415,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               : [
                   '${shunt.batteryVoltage.toStringAsFixed(2)} V',
                   '${shunt.current >= 0 ? "+" : ""}${shunt.current.toStringAsFixed(2)} A',
-                  '${(kBatteryCapacityAh * shunt.soc / 100).toStringAsFixed(1)} Ah kvar',
+                  '${(_config.batteryCapacityAh * shunt.soc / 100).toStringAsFixed(1)} Ah kvar',
                 ],
         ),
         const SizedBox(height: 10),
@@ -483,8 +498,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Color _socColor(double? soc) {
     if (soc == null) return const Color(0xFF9CA3AF);
-    if (soc < kSocCritical) return const Color(0xFFEF4444);
-    if (soc < kSocWarn) return const Color(0xFFFBBF24);
+    if (soc < _config.socCritical) return const Color(0xFFEF4444);
+    if (soc < _config.socWarn) return const Color(0xFFFBBF24);
     return const Color(0xFF4ADE80);
   }
 

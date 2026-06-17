@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
-import '../secrets.dart';
+import '../config/app_config.dart';
 import 'victron_parser.dart';
 
 class VictronState {
@@ -29,6 +29,7 @@ class VictronScanner {
   StreamSubscription<List<ScanResult>>? _scanSub;
   Timer? _watchdog;
   DateTime? _lastVictronPacket;
+  List<VictronDeviceConfig> _devices = [];
 
   Stream<VictronState> get stream => _stateController.stream;
   VictronState get current => _state;
@@ -36,13 +37,26 @@ class VictronScanner {
   // MAC-adresser till våra Victron-enheter. Android 8.1+ levererar inga
   // scan-resultat när skärmen är låst om vi inte filtrerar på något — så
   // utan denna lista tystnar appen så fort telefonen låses.
-  static List<String> get _victronMacs =>
-      kVictronDevices.map((d) => d.mac).toList();
+  List<String> get _victronMacs => _devices.map((d) => d.mac).toList();
+
+  /// Uppdatera device-listan och starta om scanning med nya MAC:ar.
+  /// Säkert att anropa även innan start() — uppdaterar då bara listan.
+  Future<void> updateDevices(List<VictronDeviceConfig> devices) async {
+    _devices = List.of(devices);
+    if (_scanSub != null) {
+      try {
+        await stop();
+        await Future.delayed(const Duration(milliseconds: 300));
+        await start();
+      } catch (_) {}
+    }
+  }
 
   Future<void> start() async {
     _scanSub = FlutterBluePlus.scanResults.listen(_onScanResults);
+    final macs = _victronMacs;
     await FlutterBluePlus.startScan(
-      withRemoteIds: _victronMacs,
+      withRemoteIds: macs.isEmpty ? null : macs,
       continuousUpdates: true,
       removeIfGone: const Duration(seconds: 30),
     );
@@ -55,8 +69,9 @@ class VictronScanner {
         try {
           await FlutterBluePlus.stopScan();
           await Future.delayed(const Duration(milliseconds: 500));
+          final macs = _victronMacs;
           await FlutterBluePlus.startScan(
-            withRemoteIds: _victronMacs,
+            withRemoteIds: macs.isEmpty ? null : macs,
             continuousUpdates: true,
             removeIfGone: const Duration(seconds: 30),
           );
@@ -67,7 +82,9 @@ class VictronScanner {
 
   Future<void> stop() async {
     _watchdog?.cancel();
+    _watchdog = null;
     await _scanSub?.cancel();
+    _scanSub = null;
     await FlutterBluePlus.stopScan();
   }
 
@@ -77,8 +94,8 @@ class VictronScanner {
       _state.seenMacs.add(mac);
       _state.totalBleDevicesSeen = _state.seenMacs.length;
 
-      VictronDevice? match;
-      for (final d in kVictronDevices) {
+      VictronDeviceConfig? match;
+      for (final d in _devices) {
         if (d.mac.toUpperCase() == mac) {
           match = d;
           break;
