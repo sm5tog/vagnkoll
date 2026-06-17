@@ -125,11 +125,31 @@ Användaren råkade använda Copilot via fel chat-flik och fick instruktioner om
 - iPhone också ansluten
 - Webbservern nås från iPhone: `http://100.70.195.29:8080`
 
-## Pågående / öppet
+## TODO inför release (kanonisk lista)
 
-- **Task #9:** Dokumentation och installationsguide (README med "så här bygger du / installerar du / konfigurerar du")
-- **Idag morgondagens test:** Installation av senaste APK (med foreground service) — verifiera att appen håller igång även med skärm låst
-- **MagicDNS** för Tailscale erbjudet men inte ännu uppsatt — skulle ge `http://husvagnen:8080` istället för IP
+Detta är **den enda** TODO-listan. Övriga filer (PROMPT.md, README.md) ska peka hit.
+
+### Blockers (måste fixas före release)
+1. **Setup-skärm** — BLE-skanning, lista Victron-enheter, klistra in encryption keys, batterikapacitet/sol-max/larmtrösklar, spara i SharedPreferences. Ersätter hårdkodad `secrets.dart`.
+2. **Onboarding-guide** — in-app steg-för-steg med skärmbilder för var i VictronConnect encryption keys finns.
+3. **Översätta hela appen till engelska** — UI-strängar är på svenska idag.
+
+### Bör finnas vid launch
+4. Verifiera mörkt tema genomgående (särskilt webvyn).
+5. Play Store-material — beskrivning EN+SV, skärmbilder, 30-sek skärminspelning.
+6. Privacy Policy-URL (krävs av Google för BLE-appar).
+7. README med komplett installationsguide — bygg, EMUI-inställningar (Skyddade appar, batterioptimering), Tailscale-setup.
+
+### v1.1
+8. Widget/notifikation med SoC på låsskärmen.
+9. Exportera historik som CSV.
+10. Konfigurerbar refresh-rate på webservern.
+11. MagicDNS för Tailscale (`http://husvagnen:8080`).
+12. iOS-build verifierad.
+
+### Övrigt
+13. Uppdateringsstrategi för always-on display-enhet.
+14. AAB-build för Play Store (inte bara APK).
 
 ## Användarspecifika preferenser
 

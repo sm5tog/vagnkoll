@@ -4,8 +4,7 @@ Victron BLE-monitor för husvagn, körs som always-on display på en Android-tel
 
 ## Status
 
-Tidig version — task #1 (projektstruktur + CI) och #2 (BLE-dekryptering) är på plats.
-Återstår: historik, träningsläge, larm, webbserver, export/import.
+På väg mot Play Store-release (svensk + engelsk). Aktuell TODO-lista finns i [BESLUT.md](BESLUT.md) under "TODO inför release".
 
 ## Hårdvara
 
