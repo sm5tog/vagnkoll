@@ -378,6 +378,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _waitingView() {
+    // Inga enheter konfigurerade → visa tydlig call-to-action istället för spinnare
+    if (_config.devices.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.bluetooth_disabled,
+                size: 56, color: Color(0xFF4B5563)),
+            const SizedBox(height: 20),
+            const Text('Inga Victron-enheter konfigurerade',
+                style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 15)),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: _openSetup,
+              icon: const Icon(Icons.settings),
+              label: const Text('Öppna setup'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1F2937),
+                foregroundColor: const Color(0xFF4ADE80),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
