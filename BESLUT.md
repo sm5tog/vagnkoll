@@ -1,6 +1,8 @@
 # Vagnkoll — Tekniska beslut och projektöversikt
 
-Lever-dokument med viktiga beslut och deras motivering, så att projektet kan plockas upp snabbt i nya samtal.
+*Senast uppdaterad: 2026-06-17*
+
+Lever-dokument med viktiga beslut och deras motivering, så att projektet kan plockas upp snabbt i nya samtal. Datumet ovan ska uppdateras vid större ändringar — använd `git log BESLUT.md` för fullständig historik.
 
 ## Syfte
 
@@ -97,6 +99,18 @@ HomeScreen (main.dart)
 
 **Varför:** App-omstart eller bakgrund-paus bör inte glömma vad som är "på". Aktiva apparater består tills classifier ser dem upphöra.
 
+### 7. Encryption key-lagring efter setup-skärmen
+
+**Beslut:** När setup-skärmen är på plats lagras Victron-encryption keys i `flutter_secure_storage` (Android KeyStore), inte i SharedPreferences. Övrig konfiguration (apparat-bibliotek, energiräknare, classifier-state, batterikapacitet, larmtrösklar) blir kvar i SharedPreferences. Vi sätter också `android:allowBackup="false"` i manifestet som extra säkerhet.
+
+**Varför:** Victron Instant Readout-keyn är en delad hemlighet som krypterar batteridata över BLE. Risken vid läckage är begränsad — en angripare kan dekryptera advertisements men inte styra Victron-enheterna. Men:
+- Play Store-publicerade appar förväntas följa security best practices; plaintext-secrets kan flaggas vid review
+- KeyStore-bundet skydd kostar lite extra dependency (`flutter_secure_storage`) men har samma API som SharedPreferences
+- Skyddar mot adb backup-läckor även om någon glömmer `allowBackup="false"`
+- Det är användarens nyckel, inte vår — och vi har inget legitimt skäl att förvara den i klartext
+
+Status quo i dagens kodbas: `secrets.dart` är hårdkodad och `.gitignore`:ad — fungerar för utvecklaren själv. Bytet sker tillsammans med blocker #1 (setup-skärmen).
+
 ## Historik av övergivna spår
 
 ### Vågforms-baserad signatur med Pearson-korrelation
@@ -130,7 +144,7 @@ Användaren råkade använda Copilot via fel chat-flik och fick instruktioner om
 Detta är **den enda** TODO-listan. Övriga filer (PROMPT.md, README.md) ska peka hit.
 
 ### Blockers (måste fixas före release)
-1. **Setup-skärm** — BLE-skanning, lista Victron-enheter, klistra in encryption keys, batterikapacitet/sol-max/larmtrösklar, spara i SharedPreferences. Ersätter hårdkodad `secrets.dart`.
+1. **Setup-skärm** — BLE-skanning, lista Victron-enheter, klistra in encryption keys, batterikapacitet/sol-max/larmtrösklar. **Keys i `flutter_secure_storage`** (se designbeslut #7), övrig konfig i SharedPreferences. Sätt `android:allowBackup="false"`. Ersätter hårdkodad `secrets.dart`.
 2. **Onboarding-guide** — in-app steg-för-steg med skärmbilder för var i VictronConnect encryption keys finns.
 3. **Översätta hela appen till engelska** — UI-strängar är på svenska idag.
 
@@ -160,6 +174,3 @@ Se `~/.claude/projects/C--claude/memory/MEMORY.md` för:
 - Aldrig manuella kod-redigeringar
 - Tekniskt: van vid BASIC/Pascal/asm/Comal från 80/90-talet, nybörjare på modernt ekosystem
 
-## Aktuell statuslag (när detta skrivs)
-
-Allt grundläggande är klart och fungerar. Återstår: dokumentation + finputs efter morgondagens test.
