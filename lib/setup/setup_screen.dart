@@ -127,20 +127,10 @@ class _SetupScreenState extends State<SetupScreen> {
     var changed = false;
     for (final r in results) {
       final mac = r.device.remoteId.str.toUpperCase();
-      var isVictron = false;
-      for (final entry in r.advertisementData.manufacturerData.entries) {
-        // 0x02E1 = Victron Energy. Vissa enheter rapporterar också Instant
-        // Readout-markören 0x10 som första byte.
-        if (entry.key == 0x02E1) {
-          isVictron = true;
-          break;
-        }
-        if (entry.value.isNotEmpty && entry.value[0] == 0x10) {
-          isVictron = true;
-          break;
-        }
-      }
-      if (!isVictron) continue;
+      // Snävt Victron-filter: bara mfg ID 0x02E1. Tidigare hade vi en
+      // fallback på första-byte 0x10 (Instant Readout-markören) men den
+      // släpper in icke-Victron-enheter som råkar börja med samma byte.
+      if (!r.advertisementData.manufacturerData.containsKey(0x02E1)) continue;
       final name = r.device.platformName.isNotEmpty
           ? r.device.platformName
           : r.advertisementData.advName;
@@ -445,6 +435,8 @@ class _DeviceDialogState extends State<_DeviceDialog> {
   late TextEditingController _name;
   late TextEditingController _key;
   String _kind = 'shunt';
+  String? _guessedKind; // Sätts om vi kunde härleda typ ur namnet
+  bool _overrideKind = false; // Om användaren tryckt "ändra" på auto-typen
   String? _error;
 
   @override
@@ -453,8 +445,23 @@ class _DeviceDialogState extends State<_DeviceDialog> {
     final ex = widget.existing;
     _name = TextEditingController(text: ex?.name ?? widget.discovered.name);
     _key = TextEditingController(text: ex?.encryptionKey ?? '');
-    _kind = ex?.kind ?? 'shunt';
+    if (ex != null) {
+      _kind = ex.kind;
+      _overrideKind = true; // Redigerar — visa dropdown så typ kan ändras
+    } else {
+      _guessedKind = _guessKindFromName(widget.discovered.name);
+      _kind = _guessedKind ?? 'shunt';
+    }
   }
+
+  static String? _guessKindFromName(String name) {
+    final n = name.toLowerCase();
+    if (n.contains('shunt') || n.contains('bmv')) return 'shunt';
+    if (n.contains('solar') || n.contains('mppt')) return 'solar';
+    return null;
+  }
+
+  String _kindLabel(String k) => k == 'solar' ? 'SmartSolar MPPT' : 'SmartShunt';
 
   @override
   void dispose() {
@@ -505,21 +512,37 @@ class _DeviceDialogState extends State<_DeviceDialog> {
               ),
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              value: _kind,
-              decoration: const InputDecoration(
-                labelText: 'Typ',
-                border: OutlineInputBorder(),
-                isDense: true,
+            if (_guessedKind != null && !_overrideKind)
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Typ: ${_kindLabel(_kind)} (auto-detekterad)',
+                      style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _overrideKind = true),
+                    child: const Text('Ändra'),
+                  ),
+                ],
+              )
+            else
+              DropdownButtonFormField<String>(
+                value: _kind,
+                decoration: const InputDecoration(
+                  labelText: 'Typ',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'shunt', child: Text('SmartShunt')),
+                  DropdownMenuItem(value: 'solar', child: Text('SmartSolar MPPT')),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _kind = v);
+                },
               ),
-              items: const [
-                DropdownMenuItem(value: 'shunt', child: Text('SmartShunt')),
-                DropdownMenuItem(value: 'solar', child: Text('SmartSolar MPPT')),
-              ],
-              onChanged: (v) {
-                if (v != null) setState(() => _kind = v);
-              },
-            ),
             const SizedBox(height: 12),
             TextField(
               controller: _key,
