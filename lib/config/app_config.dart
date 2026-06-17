@@ -60,6 +60,7 @@ class VictronDeviceConfig {
 /// Se "Encryption key-lagring efter setup-skärmen" i BESLUT.md för motivering.
 class AppConfig {
   // SharedPreferences-nycklar
+  static const _kOnboardingDone = 'app_config_onboarding_done_v1';
   static const _kDevicesMeta = 'app_config_devices_meta_v1';
   static const _kBatteryCapacity = 'app_config_battery_capacity_ah';
   static const _kBatteryType = 'app_config_battery_type';
@@ -195,10 +196,24 @@ class AppConfig {
     await prefs.setInt(_kHighLoadMinutes, highLoadMinutes);
   }
 
+  /// True om användaren antingen sparat konfig eller tryckt "hoppa över"
+  /// i onboarding. Används av main för att avgöra om setup-skärmen ska
+  /// triggas vid första start.
+  static Future<bool> isOnboardingDone() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kOnboardingDone) ?? false;
+  }
+
+  static Future<void> markOnboardingDone() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kOnboardingDone, true);
+  }
+
   /// Radera all konfig och alla secure keys. Används av "Återställ
   /// fabriksinställningar" i setup-skärmen.
   static Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kOnboardingDone);
     await prefs.remove(_kDevicesMeta);
     await prefs.remove(_kBatteryCapacity);
     await prefs.remove(_kBatteryType);

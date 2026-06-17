@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../config/app_config.dart';
@@ -16,12 +17,14 @@ class SetupScreen extends StatefulWidget {
   final List<FutureOr<void> Function()> pauseHooks;
   final List<FutureOr<void> Function()> resumeHooks;
   final VoidCallback? onConfigSaved;
+  final bool isOnboarding; // True → "hoppa över" syns, ingen swipe-tillbaka
 
   const SetupScreen({
     super.key,
     this.pauseHooks = const [],
     this.resumeHooks = const [],
     this.onConfigSaved,
+    this.isOnboarding = false,
   });
 
   @override
@@ -197,6 +200,7 @@ class _SetupScreenState extends State<SetupScreen> {
       highLoadMinutes: int.tryParse(_highLoadMin.text) ?? 10,
     );
     await cfg.save();
+    await AppConfig.markOnboardingDone();
     if (!mounted) return;
     setState(() => _saving = false);
     widget.onConfigSaved?.call();
@@ -206,6 +210,11 @@ class _SetupScreenState extends State<SetupScreen> {
       );
       Navigator.of(context).pop(true);
     }
+  }
+
+  Future<void> _skipOnboarding() async {
+    await AppConfig.markOnboardingDone();
+    if (mounted) Navigator.of(context).pop(false);
   }
 
   Future<void> _confirmReset() async {
@@ -242,10 +251,19 @@ class _SetupScreenState extends State<SetupScreen> {
       );
     }
     final cfg = _config!;
-    return Scaffold(
+    return PopScope(
+      // I onboarding-läge får man inte navigera tillbaka — spara eller hoppa över
+      canPop: !widget.isOnboarding,
+      child: Scaffold(
       appBar: AppBar(
-        title: const Text('Inställningar'),
+        automaticallyImplyLeading: !widget.isOnboarding,
+        title: Text(widget.isOnboarding ? 'Välkommen' : 'Inställningar'),
         actions: [
+          if (widget.isOnboarding && !_saving)
+            TextButton(
+              onPressed: _skipOnboarding,
+              child: const Text('HOPPA ÖVER'),
+            ),
           if (_saving)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16),
@@ -389,6 +407,7 @@ class _SetupScreenState extends State<SetupScreen> {
           const SizedBox(height: 16),
         ],
       ),
+    ),
     );
   }
 
@@ -437,7 +456,10 @@ class _DeviceDialogState extends State<_DeviceDialog> {
   String _kind = 'shunt';
   String? _guessedKind; // Sätts om vi kunde härleda typ ur namnet
   bool _overrideKind = false; // Om användaren tryckt "ändra" på auto-typen
+  String? _clipboardKey; // 32-hex-key hittad i urklippet, om någon
   String? _error;
+
+  static final _hexKey = RegExp(r'^[0-9a-f]+$');
 
   @override
   void initState() {
@@ -452,7 +474,45 @@ class _DeviceDialogState extends State<_DeviceDialog> {
       _guessedKind = _guessKindFromName(widget.discovered.name);
       _kind = _guessedKind ?? 'shunt';
     }
+    _peekClipboard();
   }
+
+  Future<void> _peekClipboard() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final t = _normalizeKey(data?.text ?? '');
+      if (t.length == 32 && _hexKey.hasMatch(t)) {
+        if (mounted) setState(() => _clipboardKey = t);
+      }
+    } catch (_) {
+      // Urklippsåtkomst kan blockeras — strunta i tipset då
+    }
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final t = _normalizeKey(data?.text ?? '');
+      if (t.length == 32 && _hexKey.hasMatch(t)) {
+        setState(() {
+          _key.text = t;
+          _clipboardKey = null;
+          _error = null;
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Urklipp innehåller ingen 32-hex-nyckel')),
+        );
+      }
+    } catch (_) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kunde inte läsa urklipp')),
+      );
+    }
+  }
+
+  static String _normalizeKey(String raw) =>
+      raw.trim().toLowerCase().replaceAll(RegExp(r'[\s:]'), '');
 
   static String? _guessKindFromName(String name) {
     final n = name.toLowerCase();
@@ -471,8 +531,8 @@ class _DeviceDialogState extends State<_DeviceDialog> {
   }
 
   void _confirm() {
-    final key = _key.text.trim().toLowerCase().replaceAll(' ', '');
-    if (key.length != 32 || !RegExp(r'^[0-9a-f]+$').hasMatch(key)) {
+    final key = _normalizeKey(_key.text);
+    if (key.length != 32 || !_hexKey.hasMatch(key)) {
       setState(() => _error = 'Nyckeln måste vara 32 hex-tecken (0–9, a–f)');
       return;
     }
@@ -544,14 +604,60 @@ class _DeviceDialogState extends State<_DeviceDialog> {
                 },
               ),
             const SizedBox(height: 12),
+            if (_clipboardKey != null && _key.text.isEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Material(
+                  color: const Color(0xFF1F2937),
+                  borderRadius: BorderRadius.circular(8),
+                  child: InkWell(
+                    onTap: _pasteFromClipboard,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.content_paste,
+                              size: 18, color: Color(0xFF4ADE80)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Hittade nyckel i urklipp: ${_clipboardKey!.substring(0, 4)}…${_clipboardKey!.substring(28)}',
+                              style: const TextStyle(
+                                color: Color(0xFF4ADE80),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                          const Text(
+                            'KLISTRA IN',
+                            style: TextStyle(
+                              color: Color(0xFF4ADE80),
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             TextField(
               controller: _key,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Encryption key (32 hex)',
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
                 isDense: true,
-                helperText: 'VictronConnect → enhet → inställningar → produktinfo → Instant Readout',
+                helperText:
+                    'VictronConnect → enhet → inställningar → produktinfo → Instant Readout. Långtryck nyckeln för att kopiera.',
                 helperMaxLines: 3,
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.content_paste, size: 20),
+                  tooltip: 'Klistra in från urklipp',
+                  onPressed: _pasteFromClipboard,
+                ),
               ),
               maxLength: 40,
             ),

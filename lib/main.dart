@@ -9,6 +9,7 @@ import 'appliances/appliance_store.dart';
 import 'appliances/appliances_screen.dart';
 import 'appliances/classifier.dart';
 import 'build_info.dart';
+import 'config/app_config.dart';
 import 'energy_counter.dart';
 import 'foreground_task.dart';
 import 'history/history_screen.dart';
@@ -118,6 +119,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       setState(() => _status = 'Bluetooth-rättigheter saknas');
       return;
     }
+
+    // Onboarding: visa setup-skärmen om appen aldrig konfigurerats. Användaren
+    // kan välja "Hoppa över" för att gå förbi (markerar onboarding klar).
+    final cfg = await AppConfig.load();
+    final onboardingDone = await AppConfig.isOnboardingDone();
+    if (!cfg.isConfigured && !onboardingDone && mounted) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => const SetupScreen(isOnboarding: true),
+          fullscreenDialog: true,
+        ),
+      );
+    }
+
     await _history.open();
     _history.attachScanner(_scanner);
     await _energy.init();
