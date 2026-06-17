@@ -153,19 +153,17 @@ Detta är **den enda** TODO-listan. Övriga filer (PROMPT.md, README.md) ska pek
 5. Play Store-material — beskrivning EN+SV, skärmbilder, 30-sek skärminspelning.
 6. Privacy Policy-URL (krävs av Google för BLE-appar).
 7. README med komplett installationsguide — bygg, EMUI-inställningar (Skyddade appar, batterioptimering), Tailscale-setup.
-8. **Snäva BT-filtret i setup-skärmen** — visa endast enheter med Victron mfg ID `0x02E1`, inte fallback på `0x10`-marker (den släpper in skräp). Dropp icke-Victron-enheter helt från listan.
-9. **Auto-detektera typ från enhetsnamn** i Lägg-till-dialogen — `SmartShunt`/`BMV` → shunt, `SmartSolar`/`MPPT` → solar. Användaren ska inte behöva välja typ när namnet redan säger det. Behåll möjligheten att override manuellt för specialfall.
 
 ### v1.1
-10. Widget/notifikation med SoC på låsskärmen.
-11. Exportera historik som CSV.
-12. Konfigurerbar refresh-rate på webservern.
-13. MagicDNS för Tailscale (`http://husvagnen:8080`).
-14. iOS-build verifierad.
+8. Widget/notifikation med SoC på låsskärmen.
+9. Exportera historik som CSV.
+10. Konfigurerbar refresh-rate på webservern.
+11. MagicDNS för Tailscale (`http://husvagnen:8080`).
+12. iOS-build verifierad.
 
 ### Övrigt
-15. Uppdateringsstrategi för always-on display-enhet.
-16. AAB-build för Play Store (inte bara APK).
+13. Uppdateringsstrategi för always-on display-enhet.
+14. AAB-build för Play Store (inte bara APK).
 
 ## Användarspecifika preferenser
 
