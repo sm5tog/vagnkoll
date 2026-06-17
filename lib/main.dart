@@ -14,6 +14,7 @@ import 'foreground_task.dart';
 import 'history/history_screen.dart';
 import 'history/history_store.dart';
 import 'secrets.dart';
+import 'setup/setup_screen.dart';
 import 'victron/victron_scanner.dart';
 import 'web/web_server.dart';
 
@@ -262,6 +263,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         constraints: const BoxConstraints(),
                         onPressed: hasData ? _openHistory : null,
                       ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.settings, size: 22),
+                        color: const Color(0xFF6B7280),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: _openSetup,
+                      ),
                     ],
                   ),
                 ],
@@ -280,6 +289,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _openHistory() {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => HistoryScreen(store: _history),
+    ));
+  }
+
+  void _openSetup() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => SetupScreen(
+        pauseHooks: [
+          () async => _scanner.stop(),
+          _energy.pause,
+          _history.pause,
+          _pauseTelemetryTimer,
+        ],
+        resumeHooks: [
+          () async => _scanner.start(),
+          _energy.resume,
+          _history.resume,
+          _resumeTelemetryTimer,
+        ],
+      ),
     ));
   }
 
