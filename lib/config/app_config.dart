@@ -103,8 +103,8 @@ class AppConfig {
     required this.highLoadMinutes,
   });
 
-  /// True om setup är gjord (minst en device konfigurerad).
-  bool get isConfigured => devices.isNotEmpty;
+  /// True om setup är gjord (minst en device med encryption key sparad).
+  bool get isConfigured => devices.any((d) => d.encryptionKey.isNotEmpty);
 
   /// Default-värden för en helt ny installation. Användaren får överskugga
   /// dessa i setup-skärmen.
@@ -133,8 +133,9 @@ class AppConfig {
         for (final item in list) {
           final map = (item as Map).cast<String, dynamic>();
           final mac = map['mac'] as String;
-          final key = await _secure.read(key: '$_kSecureKeyPrefix$mac');
-          if (key == null || key.isEmpty) continue;
+          // Inkludera alltid enheten (för withRemoteIds BLE-filter).
+          // Dekryptering misslyckas elegant om nyckeln saknas i secure storage.
+          final key = await _secure.read(key: '$_kSecureKeyPrefix$mac') ?? '';
           devices.add(VictronDeviceConfig.fromMetaJson(map, key));
         }
       } catch (_) {

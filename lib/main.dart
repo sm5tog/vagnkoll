@@ -548,21 +548,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       1 => 'Försenat',
       _ => 'Ingen signal',
     };
-    return Row(
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
-        ),
-        if (label != null) ...[
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: color, fontSize: 11)),
-        ],
-      ],
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+      ),
     );
   }
 
