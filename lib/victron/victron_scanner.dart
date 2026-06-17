@@ -56,7 +56,7 @@ class VictronScanner {
     _scanSub = FlutterBluePlus.scanResults.listen(_onScanResults);
     final macs = _victronMacs;
     await FlutterBluePlus.startScan(
-      withRemoteIds: macs.isEmpty ? null : macs,
+      withRemoteIds: macs,
       continuousUpdates: true,
       removeIfGone: const Duration(seconds: 30),
     );
@@ -71,7 +71,7 @@ class VictronScanner {
           await Future.delayed(const Duration(milliseconds: 500));
           final macs = _victronMacs;
           await FlutterBluePlus.startScan(
-            withRemoteIds: macs.isEmpty ? null : macs,
+            withRemoteIds: macs,
             continuousUpdates: true,
             removeIfGone: const Duration(seconds: 30),
           );
