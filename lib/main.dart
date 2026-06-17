@@ -242,12 +242,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   Row(
                     children: [
-                      Text('v$kBuildId',
+                      Text('v${_shortBuildId()}',
                           style: const TextStyle(
                             fontSize: 11,
                             color: Color(0xFF4B5563),
                           )),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       IconButton(
                         icon: const Icon(Icons.electrical_services, size: 22),
                         color: const Color(0xFF6B7280),
@@ -290,6 +290,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => HistoryScreen(store: _history),
     ));
+  }
+
+  // Kortform av BUILD_ID — bara HHMM-delen. Honor 9 är för smal för full sträng
+  // tillsammans med tre ikoner. Full BUILD_ID går att se via setup-skärmen.
+  String _shortBuildId() {
+    final dash = kBuildId.indexOf('-');
+    return dash > 0 ? kBuildId.substring(0, dash) : kBuildId;
   }
 
   void _openSetup() {
