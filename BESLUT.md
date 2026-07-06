@@ -144,7 +144,7 @@ Användaren råkade använda Copilot via fel chat-flik och fick instruktioner om
 Detta är **den enda** TODO-listan. Övriga filer (PROMPT.md, README.md) ska peka hit.
 
 ### Blockers (måste fixas före release)
-1. **Setup-skärm** — BLE-skanning, lista Victron-enheter, klistra in encryption keys, batterikapacitet/sol-max/larmtrösklar. **Keys i `flutter_secure_storage`** (se designbeslut #7), övrig konfig i SharedPreferences. Sätt `android:allowBackup="false"`. Ersätter hårdkodad `secrets.dart`.
+1. ~~**Setup-skärm**~~ ✅ **KLAR (2026-07-06)** — AppConfig + flutter_secure_storage + SetupScreen + onboarding-flöde + android:allowBackup="false". secrets.dart används inte längre av appen.
 2. **Onboarding-guide** — in-app steg-för-steg med skärmbilder för var i VictronConnect encryption keys finns.
 3. **Översätta hela appen till engelska** — UI-strängar är på svenska idag.
 
