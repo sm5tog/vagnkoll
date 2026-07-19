@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -312,3 +314,15 @@ jobs:
           name: vagnkoll-${{ env.BUILD_ID }}
           path: build/app/outputs/flutter-apk/vagnkoll-${{ env.BUILD_ID }}.apk
           retention-days: 30
+
+      - name: Publicera som GitHub Release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK="build/app/outputs/flutter-apk/vagnkoll-${BUILD_ID}.apk"
+          BUILD_TIME=$(TZ='Europe/Stockholm' date +"%Y-%m-%d %H:%M")
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest \
+            --title "Vagnkoll" \
+            --notes "Byggd ${BUILD_TIME}. Version: ${BUILD_ID}" \
+            "$APK"

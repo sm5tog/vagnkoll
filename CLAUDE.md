@@ -13,6 +13,8 @@ Flutter-app, always-on display för husvagn som visar Victron BLE-batteristatus 
 3. **Ambitionsnivå:** bisyssla, inte B2B. Vid avvägning mellan "perfekt polish" och "klart nog att skeppa" — välj det senare. Föreslå inte tunga professionella vägval (komplex CI, juridik, partneravtal).
 4. **Bakåtkompatibilitet:** Honor 9 kör Android 9 — vissa Android 12+ API:er är inte tillgängliga.
 5. **Bygge:** GitHub Actions, signering via Secrets, arm64-only APK.
+6. **Silent-failure-mönster: `_secure.read()` inuti yttre try-catch** — async I/O som kan kasta undantag ska aldrig ligga inuti en yttre catch som täcker logik-fel. Använd nästlad try-catch så att device-listan inte tystnar vid storage-fel.
+   <!-- källa: AppConfig.load() tömde devices-listan vid EMUI-exception, BLE-regression, 2026-07-06 -->
 
 ## Körkataloger
 - Källkod: `C:\claude\git\vagnkoll\lib\`
